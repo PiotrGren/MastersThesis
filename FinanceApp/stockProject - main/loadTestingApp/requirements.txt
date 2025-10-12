@@ -1,0 +1,4 @@
+psycopg2-binary
+gevent>=1.0.0
+faker
+locust

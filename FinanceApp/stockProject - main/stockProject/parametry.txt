@@ -1,0 +1,20 @@
+10,1,1h,WebsiteActiveUser,30.0,0.6,3
+50,1,1h,WebsiteActiveUser,30.0,0.6,3
+90,1,1h,WebsiteActiveUser,30.0,0.6,3
+130,1,1h,WebsiteActiveUser,30.0,0.6,3
+60,1,1h,WebsiteActiveUser,30.0,0.2,3
+60,1,1h,WebsiteActiveUser,30.0,0.5,3
+60,1,1h,WebsiteActiveUser,30.0,0.8,3
+60,1,1h,WebsiteActiveUser,30.0,1.1,3
+60,1,1h,WebsiteActiveUser,5.0,0.6,3
+60,1,1h,WebsiteActiveUser,20.0,0.6,3
+60,1,1h,WebsiteActiveUser,35.0,0.6,3
+60,1,1h,WebsiteActiveUser,50.0,0.6,3
+60,1,1h,WebsiteActiveUser,30.0,0.6,2
+60,1,1h,WebsiteActiveUser,30.0,0.6,4
+60,1,1h,WebsiteActiveUser,30.0,0.6,6
+60,1,1h,WebsiteActiveUser,30.0,0.6,8
+60,1,1h,WebsiteActiveUser,30.0,0.6,3
+60,1,1h,WebsiteActiveUser WebsiteReadOnlyUser WebsiteActiveUserWtihMarketAnalize,30.0,0.6,3
+60,1,1h,WebsiteActiveUser WebsiteReadOnlyUser,30.0,0.6,3
+60,1,1h,WebsiteActiveUser WebsiteActiveUserWtihMarketAnalize,30.0,0.6,3

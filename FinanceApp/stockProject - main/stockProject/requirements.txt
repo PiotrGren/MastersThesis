@@ -1,0 +1,10 @@
+Django
+djangorestframework
+gunicorn
+celery
+redis
+django-celery-beat
+gevent
+kombu
+drf-yasg
+psycopg2-binary
