@@ -1,0 +1,11 @@
+*.pyc
+__pycache__
+db.sqlite3
+.vscode
+
+
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+celerybeat-schedule*
+
+.env
