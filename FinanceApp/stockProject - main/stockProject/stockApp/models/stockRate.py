@@ -20,7 +20,7 @@ class StockRate(models.Model):
         ]
         indexes = [
             models.Index(fields=['company', 'dateInc']),
-            models.Index(fields=['comapny', 'actual']),
+            models.Index(fields=['company', 'actual']),
         ]
         
     def __str__(self):

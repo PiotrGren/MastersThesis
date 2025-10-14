@@ -4,7 +4,7 @@ from stockApp.models import CustomUser
 class CustomUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ('username', 'password', 'name', 'surname','email')
+        fields = ('username', 'password', 'name', 'surname', 'email')
         extra_kwargs = {'password': {'write_only': True}}
 
     def create(self, validated_data):
@@ -13,9 +13,9 @@ class CustomUserSerializer(serializers.ModelSerializer):
             name=validated_data['name'],
             surname=validated_data['surname'],
             money=10000.0,
-            moneyAfterTransations=10000.0,
+            moneyAfterTransactions=10000.0,
             role='ROLE_USER',
-            email=validated_data['email']
+            email=validated_data['email'],
         )
         user.set_password(validated_data['password'])
         user.save()

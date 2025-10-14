@@ -1,47 +1,65 @@
-import datetime
 import random
+from django.utils import timezone
 from rest_framework import serializers
-from stockApp.models import BuyOffer, StockRate, BalanceUpdate
+from ..models import BuyOffer, StockRate, BalanceUpdate
+from helpers import _get_request_id, _get_session_id
 
 class BuyOfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = BuyOffer
-        fields = ['company', 'startAmount', 'amount']
-        
+        fields = ['company', 'startAmount', 'amount']  # na zewnątrz trzymamy minimalny interfejs
+
+    def validate(self, attrs):
+        if attrs.get('amount', 0) <= 0:
+            raise serializers.ValidationError("Amount must be > 0.")
+        if attrs.get('startAmount', 0) <= 0:
+            raise serializers.ValidationError("startAmount must be > 0.")
+        return attrs
+
     def create(self, validated_data):
         request = self.context.get('request')
         user = request.user
         amount = validated_data['amount']
         company = validated_data['company']
-        
+
+        # najnowszy "actual" kurs
         try:
-            latestStockRate = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
-            currentRate = latestStockRate.rate
+            latest = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
+            current_rate = latest.rate
         except StockRate.DoesNotExist:
-            print("add offer stock error")
             raise serializers.ValidationError("No stock rate available for the selected company.")
-        
-        minPrice = 0.95 * currentRate
-        maxPrice = 1.1 * currentRate
-        calculatedPrice = round(random.uniform(minPrice, maxPrice), 2)
-        totalCost = calculatedPrice * amount
-        if user.moneyAfterTransations < totalCost:
-            print('buy offer money error')
-            raise serializers.ValidationError("You do not have enough money to cover this transaction.")
-        
+
+        # widełki ceny (buy): 0.95 .. 1.10 * last
+        min_price = 0.95 * current_rate
+        max_price = 1.10 * current_rate
+        calculated_price = round(random.uniform(min_price, max_price), 2)
+
+        total_cost = calculated_price * amount
+        # pole zgodne z MODELEM: moneyAfterTransactions
+        if user.moneyAfterTransactions < total_cost:
+            raise serializers.ValidationError("Insufficient funds to cover this transaction.")
+
+        # rezerwacja środków (księga zdarzeń)
         BalanceUpdate.objects.create(
-            user = user,
-            changeAmount = -totalCost,
-            changeType = 'moneyAfterTransactions',
+            user=user,
+            changeAmount=-total_cost,
+            changeType='moneyAfterTransactions',
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
         )
-        
-        dateLimit = datetime.datetime.now() + datetime.timedelta(minutes=3)
-        
-        buyOffer = BuyOffer.objects.create(
-            user=request.user,
-            actual=True,
-            maxPrice= calculatedPrice,
-            dateLimit = dateLimit,
-            **validated_data
+
+        date_limit = timezone.now() + timezone.timedelta(minutes=3)
+
+        buy = BuyOffer.objects.create(
+            user=user,
+            company=company,
+            startAmount=validated_data['startAmount'],
+            amount=amount,
+            maxPrice=calculated_price,
+            dateLimit=date_limit,
+            actual=True,                   # dla kompatybilności
+            status='active',               # nowa semantyka
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
         )
-        return buyOffer
+        return buy

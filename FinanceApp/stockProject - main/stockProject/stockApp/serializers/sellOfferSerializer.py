@@ -1,47 +1,65 @@
-import datetime
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import serializers
 from stockApp.models import SellOffer, Stock, StockRate
 import random
+from helpers import _get_request_id, _get_session_id
 
 class SellOfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = SellOffer
         fields = ['company', 'startAmount', 'amount']
-        
+
+    def validate(self, attrs):
+        if attrs.get('amount', 0) <= 0:
+            raise serializers.ValidationError("Amount must be > 0.")
+        if attrs.get('startAmount', 0) <= 0:
+            raise serializers.ValidationError("startAmount must be > 0.")
+        return attrs
+
     def create(self, validated_data):
         request = self.context.get('request')
+        user = request.user
         company = validated_data['company']
         amount = validated_data['amount']
-        
+
         try:
-            latestStockRate = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
-            currentRate = latestStockRate.rate
+            latest = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
+            current_rate = latest.rate
         except StockRate.DoesNotExist:
             raise serializers.ValidationError("No stock rate available for the selected company.")
-        
+
         try:
-            stock = Stock.objects.get(user=request.user, company=company)
-            if stock.amount < amount:
-                raise serializers.ValidationError("You do not have enough shares.")
+            stock = Stock.objects.get(user=user, company=company)
         except Stock.DoesNotExist:
             raise serializers.ValidationError("You do not own shares of this company.")
-        
-        minprice = 0.9 * currentRate
-        maxprice = 1.05 * currentRate
-        calculatedprice = round(random.uniform(minprice, maxprice), 2)
-        dateLimit = datetime.datetime.now() + datetime.timedelta(minutes=3)
-        
-        sellOffer = SellOffer.objects.create(
-            user=request.user,
+
+        if stock.amount < amount:
+            raise serializers.ValidationError("You do not have enough shares.")
+
+        # widełki ceny (sell): 0.90 .. 1.05 * last
+        min_price = 0.90 * current_rate
+        max_price = 1.05 * current_rate
+        calculated_price = round(random.uniform(min_price, max_price), 2)
+
+        date_limit = timezone.now() + timezone.timedelta(minutes=3)
+
+        sell = SellOffer.objects.create(
+            user=user,
+            company=company,
             stock=stock,
-            minPrice=calculatedprice,
-            dateLimit=dateLimit,
-            actual = True,
-            **validated_data
+            startAmount=validated_data['startAmount'],
+            amount=amount,
+            minPrice=calculated_price,
+            dateLimit=date_limit,
+            actual=True,
+            status='active',
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
         )
-        
+
+        # blokujemy posiadane akcje pod ofertę
         stock.amount -= amount
-        stock.save()
-        
-        return sellOffer
+        stock.save(update_fields=['amount'])
+
+        return sell

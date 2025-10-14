@@ -13,7 +13,7 @@ class MarketLog(models.Model):
     databaseTime = models.FloatField()
     
     # [WHY] URLField bywa zbyt restrykcyjny / za krótki; CharField jest bezpieczniejszy do surowych ścieżek
-    endpointUrl = models.URLField(max_length=2048)
+    endpointUrl = models.CharField(max_length=2048)
     
     # [WHY] korelacja HTTP↔oferty↔transakcje; indeks pod joiny/log export
     requestId = models.CharField(max_length=64, db_index=True)

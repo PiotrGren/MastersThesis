@@ -15,7 +15,7 @@ class CustomUser(AbstractUser):
     role = models.CharField(max_length=150)
 
     created_at = models.DateTimeField(auto_now_add=True)
-    upadted_at = models.DateTimeField(auto_now=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f"{self.username} ({self.name} {self.surname})"
