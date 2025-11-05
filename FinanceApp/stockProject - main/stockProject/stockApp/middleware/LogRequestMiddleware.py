@@ -1,4 +1,3 @@
-# stockApp/middleware/LogRequestMiddleware.py
 import datetime
 import time
 from django.utils.deprecation import MiddlewareMixin

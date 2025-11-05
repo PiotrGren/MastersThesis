@@ -6,7 +6,7 @@ class Cpu(models.Model):
     memoryUsage = models.FloatField()
 
     # Stare pole zostaje dla kompatybilności - trzeba sprawdzić czy jest gdzieś używane najpierw
-    contenerId = models.CharField(max_length=64, null=True, blank=True)
+    # contenerId = models.CharField(max_length=64, null=True, blank=True)
 
     # Nowe, poprawne pole z indeksami
     containerId = models.CharField(max_length=64, db_index=True)

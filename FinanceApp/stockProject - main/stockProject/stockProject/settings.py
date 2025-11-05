@@ -53,8 +53,20 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'stockApp.middleware.LogRequestMiddleware.LogRequestMiddleware',
+    #'stockApp.middleware.LogRequestMiddleware.LogRequestMiddleware',
+    'stockApp.middleware.request_logging.RequestLoggingMiddleware',
 ]
+
+# Kontekst środowiskowy
+ENV = os.getenv("ENV", "dev")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "api")
+SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.1.0")
+HOSTNAME = os.getenv("HOSTNAME", "")  # w kontenerze Docker zwykle ustawia się samo
+
+# Ścieżki logów
+LOG_DIR = os.getenv("LOG_DIR", "/logs")
+REQUEST_LOG_JSONL = os.getenv("REQUEST_LOG_JSONL", "request_log.jsonl")
+ERROR_LOG_JSONL = os.getenv("ERROR_LOG_JSONL", "error_log.jsonl")
 
 ROOT_URLCONF = 'stockProject.urls'
 

@@ -42,6 +42,8 @@ class RequestLog(models.Model):
     # Surowe konteksty
     request_context = models.JSONField(null=True, blank=True)       # np. nagłówki, payload_size itp.
     error_context = models.JSONField(null=True, blank=True)         # komunikat/stack przy błędzie
+    
+    env = models.CharField(max_length=32, null=True, blank=True, db_index=True)
 
     class Meta:
         indexes = [

@@ -1,3 +1,89 @@
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from stockApp.models import Stock, CustomUser
+from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
+from stockApp.views.mixins import RequestContextMixin
+
+
+class FundsView(RequestContextMixin, APIView):
+    """
+    PUT /api/user/funds
+    Aktualizuje dane użytkownika (np. dodanie środków).
+    Wcześniej: addMoney()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, *args, **kwargs):
+        user = request.user
+        serializer = UserUpdateSerializer(user, data=request.data, partial=True, context=self.get_serializer_context())
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserStocksView(RequestContextMixin, APIView):
+    """
+    GET /api/user/stocks
+    Zwraca wszystkie akcje użytkownika z amount > 0.
+    Wcześniej: getUserStocks()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        stocks = Stock.objects.filter(user=request.user, amount__gt=0)
+        serializer = StockSerializer(stocks, many=True, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserInfoView(RequestContextMixin, APIView):
+    """
+    GET /api/user/info
+    Zwraca dane aktualnie zalogowanego użytkownika.
+    Wcześniej: getUserInfo()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        serializer = CustomUserInfoSerializer(request.user, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UsersMoneyCheckView(RequestContextMixin, APIView):
+    """
+    GET /api/users/money-check
+    Dla celów testowych (publiczne API) — średnia ilość środków wszystkich użytkowników.
+    Wcześniej: getUsersMoneyCheck()
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        admin_users = CustomUser.objects.filter(is_superuser=True)
+        users = CustomUser.objects.exclude(id__in=admin_users.values_list('id', flat=True)).all()
+
+        if not users.exists():
+            return Response({"detail": "No non-admin users found."}, status=status.HTTP_404_NOT_FOUND)
+
+        total_money = sum(u.money for u in users)
+        total_after = sum(u.moneyAfterTransactions for u in users)
+        count = users.count()
+
+        avg_money = round(total_money / count, 2)
+        avg_after = round(total_after / count, 2)
+
+        return Response({"money": avg_money, "moneyAT": avg_after}, status=status.HTTP_200_OK)
+
+
+
+
+"""
+OLD
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
@@ -51,4 +137,5 @@ def getUsersMoneyCheck(request):
         moneyat += user.moneyAfterTransations
     money = money / users.count()
     moneyat = moneyat / users.count()
-    return Response({"money":money,"moneyAT": moneyat,'requestId': str(uuid.uuid4())}, status = status.HTTP_200_OK)  
+    return Response({"money":money,"moneyAT": moneyat,'requestId': str(uuid.uuid4())}, status = status.HTTP_200_OK)
+"""
