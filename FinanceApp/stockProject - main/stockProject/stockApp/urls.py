@@ -6,6 +6,7 @@ from stockApp.views.companies import CompanyViewSet, CompanyRatesView
 from stockApp.views.offers import BuyOfferViewSet, SellOfferViewSet
 from stockApp.views.user import FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView
 
+
 router = DefaultRouter()
 router.register(r'companies', CompanyViewSet, basename='companies')
 router.register(r'buyoffers', BuyOfferViewSet, basename='buyoffers')
@@ -13,20 +14,20 @@ router.register(r'selloffers', SellOfferViewSet, basename='selloffers')
 
 urlpatterns = [
     # Auth
-    path('api/signUp', SignUpView.as_view(), name='sign-up'),
-    path('api/signIn', SignInView.as_view(), name='sign-in'),
+    path('signUp/', SignUpView.as_view(), name='sign-up'),
+    path('signIn/', SignInView.as_view(), name='sign-in'),
     
     # User
-    path('api/user/funds', FundsView.as_view(), name='user-funds'),
-    path('api/user/stocks', UserStocksView.as_view(), name='user-stocks'),
-    path('api/user/info', UserInfoView.as_view(), name='user-info'),
-    path('api/users/money-check', UsersMoneyCheckView.as_view(), name='users-money-check'),
+    path('user/funds/', FundsView.as_view(), name='user-funds'),
+    path('user/stocks/', UserStocksView.as_view(), name='user-stocks'),
+    path('user/info/', UserInfoView.as_view(), name='user-info'),
+    path('users/money-check/', UsersMoneyCheckView.as_view(), name='users-money-check'),
 
     # Companies
-    path('api/companies/rates', CompanyRatesView.as_view(), name='company-rates'),
+    path('companies/rates/', CompanyRatesView.as_view(), name='company-rates'),
 
     # Router (companies list/create)
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
 ]
 
 

@@ -56,3 +56,95 @@ def calc_cpu_pct(stats: dict) -> float:
         pass
     return 0.0
 
+def calc_mem(stats: dict) -> tuple[float, float]:
+    try:
+        used = float(stats["memory_stats"].get("usage", 0))
+        limit = float(stats["memory_stats"].get("limit", 1))
+        pct = (used / limit * 100.0) if limit > 0 else 0.0
+        mb = used / (1024 * 1024)
+        return pct, mb
+    except Exception:
+        return 0.0, 0.0
+
+def calc_net_kb(stats: dict) -> tuple[int, int]:
+    try:
+        nets = stats.get("networks", {}) or {}
+        rx = sum(int(v.get("rx_bytes", 0)) for v in nets.values())
+        tx = sum(int(v.get("tx_bytes", 0)) for v in nets.values())
+        return rx // 1024, tx // 1024
+    except Exception:
+        return 0, 0
+
+# --- DB helpers (opcjonalnie) ---
+_conn = None
+def db_connect():
+    global _conn
+    if not DB_ENABLED:
+        return None
+    if _conn is not None:
+        return _conn
+    _conn = psycopg2.connect(
+        dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
+    )
+    _conn.autocommit = True
+    return _conn
+
+def db_insert_sample(ts_iso: str, cpu_pct: float, mem_pct: float, container_name: str):
+    """
+    Minimalny insert zgodny z dawnym schematem (stockApp_cpu):
+    - timestamp (UTC), cpuUsage (proc), memoryUsage (proc), containerId (nazwa)
+    Jeśli masz nowy schemat (service/env/itd.), rozszerz INSERT o te kolumny.
+    """
+    if not DB_ENABLED:
+        return
+    try:
+        conn = db_connect()
+        with conn.cursor() as cur:
+            cur.execute(
+                'INSERT INTO "stockApp_cpu" (timestamp, "cpuUsage", "memoryUsage", "containerId") VALUES (%s, %s, %s, %s)',
+                (ts_iso, round(cpu_pct, 2), round(mem_pct, 2), container_name),
+            )
+    except Exception:
+        # nie blokuj — JSONL jest źródłem prawdy
+        pass
+
+def main():
+    time.sleep(WARMUP_SEC)
+    while True:
+        try:
+            containers = client.containers.list()
+            ts = now_utc_iso()
+            for c in containers:
+                try:
+                    stats = c.stats(stream=False)
+                    cpu_pct = calc_cpu_pct(stats)
+                    mem_pct, mem_mb = calc_mem(stats)
+                    rx_kb, tx_kb = calc_net_kb(stats)
+
+                    record = {
+                        "timestamp": ts,
+                        "env": ENV,
+                        "container_id": c.short_id,
+                        "container_name": c.name,
+                        "service_name": get_service_name(c),
+                        "cpu_pct": round(cpu_pct, 2),
+                        "mem_pct": round(mem_pct, 2),
+                        "mem_mb": round(mem_mb, 2),
+                        "net_rx_kb": rx_kb,
+                        "net_tx_kb": tx_kb,
+                    }
+
+                    append_jsonl(JSONL_PATH, record)
+                    db_insert_sample(ts, cpu_pct, mem_pct, c.name)
+
+                except Exception:
+                    # per-container błąd — log pomijamy, lecimy dalej
+                    continue
+        except Exception:
+            # błąd top-level — spróbuj dalej w kolejnym ticku
+            pass
+
+        time.sleep(INTERVAL_SEC)
+
+if __name__ == "__main__":
+    main()

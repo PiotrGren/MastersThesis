@@ -3,6 +3,9 @@
 from django.db import models
 import uuid
 
+def gen_uuid_str():
+    return str(uuid.uuid4())
+
 class ErrorLog(models.Model):
     class Level(models.TextChoices):
         ERROR = 'ERROR', 'ERROR'
@@ -11,7 +14,7 @@ class ErrorLog(models.Model):
     # Identyfikatory
     error_id = models.CharField(
         max_length=64,
-        default=lambda: str(uuid.uuid4()),
+        default=gen_uuid_str,
         unique=True,
         db_index=True,
         help_text="Unikalny identyfikator zdarzenia (UUID)."

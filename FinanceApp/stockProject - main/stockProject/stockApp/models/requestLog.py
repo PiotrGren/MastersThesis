@@ -11,6 +11,7 @@ class RequestLog(models.Model):
     # Kontekst użytkownika (bez PII)
     user_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)   # np. CustomUser.public_id
     user_role = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    user_class = models.CharField(max_length=64, null=True, blank=True, db_index=True)
 
     # Czas i podstawy HTTP
     timestamp = models.DateTimeField(db_index=True)                 # czas przyjęcia żądania (UTC)

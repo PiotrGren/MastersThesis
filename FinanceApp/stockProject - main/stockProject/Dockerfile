@@ -1,8 +1,6 @@
 FROM python:3.10-slim
 
-# Ustawienie zmiennej środowiskowej, aby zapobiec błędowi „Input is not a tty”
 ENV PYTHONUNBUFFERED 1
-
 WORKDIR /app
 
 COPY requirements.txt /app/

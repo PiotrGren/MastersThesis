@@ -1,6 +1,7 @@
 from django.db import models
 from .company import Company
 from .user import CustomUser
+from django.utils import timezone
 
 
 class Stock(models.Model):
@@ -8,8 +9,8 @@ class Stock(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='stocks')
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='stocks')
     
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at =  models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at =  models.DateTimeField(default=timezone.now)#auto_now=True)
     
     class Meta:
         constraints = [

@@ -3,7 +3,7 @@ from rest_framework import serializers
 from rest_framework import serializers
 from stockApp.models import SellOffer, Stock, StockRate
 import random
-from helpers import _get_request_id, _get_session_id
+from .helpers import _get_request_id, _get_session_id
 
 class SellOfferSerializer(serializers.ModelSerializer):
     class Meta:

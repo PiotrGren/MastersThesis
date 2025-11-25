@@ -1,0 +1,148 @@
+version: "3.9"
+
+services:
+  # ---- Backend (Django + API + middleware logging) ----
+  api:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: stock_api
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             gunicorn stockProject.wsgi:application --bind 0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - LOG_DIR=/logs
+      - ENV=dev
+      - SERVICE_VERSION=1.0.0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DJANGO_SETTINGS_MODULE=stockProject.settings
+    volumes:
+      - ./logs:/logs
+      - .:/app
+    depends_on:
+      - db
+      - redis
+
+  # ---- Celery Worker ----
+  worker:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: stock_worker
+    command: celery -A stockProject worker --loglevel=INFO --pool=solo
+    env_file:
+      - .env
+    environment:
+      - LOG_DIR=/logs
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - ENV=dev
+      - SERVICE_VERSION=1.0.0
+    volumes:
+      - ./logs:/logs
+      - .:/app
+    depends_on:
+      - api
+      - redis
+      - db
+
+  # ---- Celery Beat Scheduler ----
+  beat:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: stock_beat
+    command: celery -A stockProject beat --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      - LOG_DIR=/logs
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - ENV=dev
+      - SERVICE_VERSION=1.0.0
+      - SCHED_MATCH_S=5
+      - SCHED_RATES_S=10
+      - SCHED_BALANCES_S=7.5
+      - SCHED_EXPIRE_S=60
+    volumes:
+      - ./logs:/logs
+      - .:/app
+    depends_on:
+      - worker
+      - redis
+      - db
+
+  # ---- Redis (Celery broker + backend) ----
+  redis:
+    image: redis:7.2
+    container_name: stock_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # ---- Postgres ----
+  db:
+    image: postgres:15
+    container_name: stock_db
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${DB_NAME:-stock}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  # ---- Monitor kontenerów ----
+  monitor:
+    build:
+      context: ./monitor
+      dockerfile: ./Dockerfile
+    container_name: stock_monitor
+    environment:
+      - MONITOR_DB_ENABLED=0
+      - LOG_DIR=/logs
+      - SERVICE_NAME=monitor
+      - ENV=dev
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/logs
+    depends_on:
+      - api
+      - worker
+      - beat
+    profiles: ["load"]
+
+  # ---- Locust (aplikacja obciążeniowa) ----
+  locust:
+    build:
+      context: ../loadTestingApp
+      dockerfile: ./Dockerfile
+    container_name: stock_locust
+    environment:
+      - LOCUST_HOST=http://api:8000
+      - LOG_DIR=/logs
+      - TIME_BETWEEN_REQUESTS_MIN=0.5
+      - TIME_BETWEEN_REQUESTS_MAX=1.5
+      - RATES_N=3
+    volumes:
+      - ../logs:/logs
+    depends_on:
+      - api
+    entrypoint: ["/bin/sh", "start_locust.sh"]
+    profiles: ["load"]
+
+volumes:
+  redis_data:
+  postgres_data:

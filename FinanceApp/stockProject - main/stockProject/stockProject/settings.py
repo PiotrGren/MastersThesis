@@ -26,7 +26,8 @@ SECRET_KEY = 'django-insecure-zrz$uuw!l+*=^b&!4071)bz0%9ma9rqa@di%(z5aqhl$ifsw)0
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['127.0.0.1','192.168.1.110','localhost', 'web']
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+#ALLOWED_HOSTS = ['127.0.0.1','192.168.1.110','localhost', 'web']
 
 
 # Application definition
@@ -43,6 +44,7 @@ INSTALLED_APPS = [
     'rest_framework.authtoken',
     'django_celery_beat',
     'drf_yasg',
+    'django_extensions',
 ]
 
 MIDDLEWARE = [

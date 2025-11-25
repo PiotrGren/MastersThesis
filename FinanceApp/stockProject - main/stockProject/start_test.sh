@@ -1,50 +1,47 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Ścieżka do pliku z parametrami
-param_file="parametry.txt"
+PARAM_FILE="${1:-parameters.txt}"
+PROFILE="load"
 
-# Sprawdzenie, czy plik istnieje
-if [ ! -f "$param_file" ]; then
-  echo "Plik z parametrami $param_file nie istnieje!"
+if [ ! -f "$PARAM_FILE" ]; then
+  echo "Brak pliku z parametrami: $PARAM_FILE"
   exit 1
 fi
 
-# Inicjalizacja licznika
-counter=1
+echo "=== Uruchamiam monitor ==="
+docker compose --profile "$PROFILE" up -d monitor
 
-# Iteracja przez każdy wiersz (zestaw parametrów) w pliku
-while IFS= read -r params; do
-  # Sprawdzenie, czy wiersz nie jest pusty
-  if [[ -z "$params" ]]; then
-    continue
-  fi
+SCENARIO_NUM=1
 
-  echo "Uruchamiam Dockera z parametrami: $params"
+while IFS=',' read -r SCENARIO_ID USERS SPAWN_RATE TIME CLASSES WAIT_MIN WAIT_MAX RATES_N; do
+  # pomijamy puste linie i komentarze
+  [[ -z "$SCENARIO_ID" ]] && continue
+  [[ "$SCENARIO_ID" =~ ^# ]] && continue
 
-  # Rozdzielenie parametrów oddzielonych przecinkami
-  IFS=',' read -r -a param_array <<< "$params"
+  echo
+  echo "=== [${SCENARIO_NUM}] SCENARIUSZ: $SCENARIO_ID ==="
+  echo "USERS=$USERS SPAWN_RATE=$SPAWN_RATE TIME=$TIME CLASSES=$CLASSES WAIT=${WAIT_MIN}-${WAIT_MAX} RATES_N=$RATES_N"
 
-  # Przekazanie parametrów do skryptu Docker (użycie cudzysłowów, aby zachować spacje w argumentach)
-  ./generate_docker-compose.sh "${param_array[@]}"
+  # Odpalamy locusta jako jednorazowy run; kontener sam się usunie po zakończeniu
+  docker compose --profile "$PROFILE" run --rm \
+    -e USERS="$USERS" \
+    -e SPAWN_RATE="$SPAWN_RATE" \
+    -e TIME="$TIME" \
+    -e LOCUST_CLASSES="${CLASSES//:/,}" \
+    -e TIME_BETWEEN_REQUESTS_MIN="$WAIT_MIN" \
+    -e TIME_BETWEEN_REQUESTS_MAX="$WAIT_MAX" \
+    -e RATES_N="$RATES_N" \
+    -e SCENARIO_ID="$SCENARIO_ID" \
+    locust
 
-  # Czekaj
-  echo "Oczekiwanie"
-  sleep 4200
+  echo "=== Scenariusz $SCENARIO_ID zakończony ==="
+  SCENARIO_NUM=$((SCENARIO_NUM+1))
 
-  # Zatrzymanie kontenerów
-  echo "Zatrzymuję kontenery..."
-  docker-compose -f docker-compose.generated.yml down
+done < "$PARAM_FILE"
 
-  # Pobranie logów za pomocą skryptu get-logs.sh, z numerem iteracji w nazwie pliku
-  echo "Pobieranie logów i zapisywanie do pliku: logdatabase_test$counter.sql"
-  ./get_logs.sh "$counter"
+echo
+echo "=== Wszystkie scenariusze zakończone. Zatrzymuję monitor. ==="
+docker compose --profile "$PROFILE" stop monitor
 
-  # Zwiększenie licznika
-  counter=$((counter + 1))
-
-  # Po zakończeniu iteracji dla tego zestawu parametrów
-  docker-compose -f docker-compose.generated.yml down -v
-  echo "Zakończono przetwarzanie zestawu parametrów: $params"
-done < "$param_file"
-
-echo "Wszystkie testy zostały zakończone."
+echo "Gotowe. Locust i monitor są zatrzymane."

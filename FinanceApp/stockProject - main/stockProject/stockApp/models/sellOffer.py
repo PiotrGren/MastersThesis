@@ -2,6 +2,7 @@ from django.db import models
 from .user import CustomUser
 from .stock import Stock
 from .company import Company
+from django.utils import timezone
 
 
 class SellOffer(models.Model):
@@ -32,8 +33,8 @@ class SellOffer(models.Model):
     session_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
 
     # [WHY] analizy czasowe
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at = models.DateTimeField(default=timezone.now)#auto_now=True)
     
     class Meta:
         constraints = [

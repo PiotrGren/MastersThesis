@@ -2,7 +2,7 @@ import random
 from django.utils import timezone
 from rest_framework import serializers
 from ..models import BuyOffer, StockRate, BalanceUpdate
-from helpers import _get_request_id, _get_session_id
+from .helpers import _get_request_id, _get_session_id
 
 class BuyOfferSerializer(serializers.ModelSerializer):
     class Meta:

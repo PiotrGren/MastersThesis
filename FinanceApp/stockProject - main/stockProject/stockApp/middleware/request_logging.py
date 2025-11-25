@@ -1,3 +1,4 @@
+import os, socket
 import json
 import time
 import uuid
@@ -24,6 +25,12 @@ ERROR_JSONL = LOG_DIR / getattr(settings, "ERROR_LOG_JSONL", "error_log.jsonl")
 ENV = getattr(settings, "ENV", "dev")
 SERVICE_NAME = getattr(settings, "SERVICE_NAME", "api")
 SERVICE_VERSION = getattr(settings, "SERVICE_VERSION", "0.0.0")
+CONTAINER_ID = (
+    os.getenv("CONTAINER_ID")
+    or os.getenv("HOSTNAME")
+    or socket.gethostname()
+    or "unknown"
+)
 
 # mapowanie ścieżek -> grup akcji (tokeny do modelu)
 def group_endpoint(path: str, method: str) -> str:
@@ -58,19 +65,87 @@ class RequestLoggingMiddleware(MiddlewareMixin):
     5) Przy 4xx/5xx – dopisuje ErrorLog + JSONL.
     """
 
+    def _classify_status(self, status_code: int) -> str:
+        """
+        Prosta klasyfikacja typu błędu po kodzie HTTP.
+        """
+        if status_code >= 500:
+            return "server_error"
+        if status_code == 400:
+            return "validation_or_bad_request"
+        if status_code in (401, 403):
+            return "auth"
+        if status_code == 404:
+            return "not_found"
+        return "client_error"
+
+    def _extract_error_meta(self, response: HttpResponse, status_code: int) -> tuple[str, str, dict]:
+        """
+        Wyciąga z Response:
+        - message: sensowny string z DRF (ValidationError, non_field_errors, błędy pól)
+        - error_type: np. 'validation', 'auth', 'server_error', ...
+        - extra_ctx: dodatkowy kontekst do ErrorLog (np. fields)
+
+        Minimalne, ale dużo czytelniejsze logi.
+        """
+        msg: str | None = None
+        error_type: str | None = None
+        extra_ctx: dict = {}
+
+        data = getattr(response, "data", None)
+
+        # 1) Jeśli to słownik (typowy DRF)
+        if isinstance(data, dict):
+            # a) typowe pole detail
+            if "detail" in data:
+                msg = str(data["detail"])
+                error_type = "detail"
+            # b) stare API 'error'
+            elif "error" in data:
+                msg = str(data["error"])
+                error_type = "error"
+            else:
+                # c) klasyczne błędy walidacji serializera:
+                #    {'non_field_errors': ['Insufficient funds...'], 'amount': ['Must be > 0.0']}
+                field_msgs = []
+                for field, errors in data.items():
+                    if isinstance(errors, (list, tuple)) and errors:
+                        field_msgs.append(f"{field}: {errors[0]}")
+                    else:
+                        field_msgs.append(f"{field}: {errors}")
+                if field_msgs:
+                    msg = "; ".join(map(str, field_msgs))
+                    error_type = "validation"
+                    extra_ctx["fields"] = list(data.keys())
+
+        # 2) Jeśli lista – np. lista komunikatów
+        elif isinstance(data, list) and data:
+            msg = "; ".join(map(str, data))
+            error_type = "validation"
+
+        # 3) Fallback – nic sensownego nie znaleziono
+        if not msg:
+            msg = f"HTTP {status_code}"
+        if not error_type:
+            error_type = self._classify_status(status_code)
+
+        return msg, error_type, extra_ctx
+
     def process_request(self, request: HttpRequest) -> None:
         # 1) Request-ID + Session-ID
         req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        setattr(request, "request_id", req_id)  # prywatnie na czas żądania
+        setattr(request, "_request_id", req_id)  # prywatnie na czas żądania
         setattr(request, "_session_id", request.headers.get("X-Session-ID"))
+
+        # 1a) Scenario ID od Locusta (opcjonalne)
+        scenario_id = request.headers.get("X-Scenario-Id")
+        setattr(request, "_scenario_id", scenario_id)
 
         # 2) Pomiar czasu
         setattr(request, "_t_start", time.perf_counter())
 
         # 3) DB: licznik i wymuszenie mierzenia czasu zapytań
         setattr(request, "_q_index", len(connection.queries))
-        # Django standardowo liczy czasy tylko przy DEBUG=True.
-        # Wymuszamy licznik dla bieżącego żądania:
         setattr(request, "_force_debug_cursor_prev", connection.force_debug_cursor)
         connection.force_debug_cursor = True
 
@@ -114,6 +189,9 @@ class RequestLoggingMiddleware(MiddlewareMixin):
             ip = request.META.get("REMOTE_ADDR", "")
             ua_hash = _hash(ua) if ua else None
             ip_hash = _hash(ip) if ip else None
+            
+            user_class = request.headers.get("X-Request-Class")
+            scenario_id = getattr(request, "_scenario_id", None)
 
             # --- przygotowanie rekordu
             payload: Dict[str, Any] = {
@@ -121,6 +199,7 @@ class RequestLoggingMiddleware(MiddlewareMixin):
                 "session_id": getattr(request, "_session_id", None),
                 "user_id": str(user_id) if user_id else None,
                 "user_role": user_role,
+                "user_class": user_class,
                 "timestamp": now().isoformat(),
                 "api_method": method,
                 "endpoint": path,
@@ -138,46 +217,52 @@ class RequestLoggingMiddleware(MiddlewareMixin):
                 "service_name": SERVICE_NAME,
                 "env": ENV,
                 "service_version": SERVICE_VERSION,
+                "container_id": CONTAINER_ID,
                 "request_context": {          # surowe parametry przydatne do debug/treningu
                     "headers_subset": {
                         "content_type": request.META.get("CONTENT_TYPE"),
                         "accept": request.META.get("HTTP_ACCEPT"),
                     },
                     "query": request.GET.dict() if hasattr(request, "GET") else {},
+                    "scenario_id": scenario_id, 
                 },
                 "error_context": None,        # niżej dla 4xx/5xx
             }
 
             # --- 4xx/5xx → błąd
             if not success:
-                msg = None
-                try:
-                    # DRF Response ma .data
-                    data = getattr(response, "data", None)
-                    if isinstance(data, dict) and "detail" in data:
-                        msg = data.get("detail")
-                    elif isinstance(data, dict) and "error" in data:
-                        msg = data.get("error")
-                except Exception:
-                    pass
+                # Wyciągamy sensowny komunikat + typ błędu
+                msg, err_type, extra_ctx = self._extract_error_meta(
+                    response,
+                    payload["http_status"],
+                )
 
                 payload["error_context"] = {
-                    "message": str(msg) if msg else f"HTTP {payload['http_status']}",
+                    "message": msg,
+                    "error_type": err_type,
                 }
 
-                # zapis do ErrorLog (DB) + JSONL
+                level = "ERROR" if payload["http_status"] >= 500 else "WARN"
+
+                # zapis do ErrorLog (DB)
                 try:
                     ErrorLog.objects.create(
                         error_id=str(uuid.uuid4()),
                         timestamp=payload["timestamp"],
-                        level="ERROR" if payload["http_status"] >= 500 else "WARN",
+                        level=level,
                         component="api",
                         request_id=payload["request_id"],
                         parent_request_id=None,
-                        error_code=str(payload["http_status"]),
-                        message=str(msg) if msg else "",
+                        error_code=err_type or str(payload["http_status"]),
+                        message=msg,
                         stack=None,
-                        context={"endpoint": path, "method": method},
+                        context={
+                            "endpoint": path,
+                            "method": method,
+                            "endpoint_group": payload["endpoint_group"],
+                            "user_class": payload.get("user_class"),
+                            **extra_ctx,
+                        },
                         env=ENV,
                         service_version=SERVICE_VERSION,
                         container_id=payload["container_id"],
@@ -186,14 +271,19 @@ class RequestLoggingMiddleware(MiddlewareMixin):
                     # nie blokujemy odpowiedzi; fallback do pliku
                     pass
 
+                # JSONL – to samo, ale w wersji płaskiej
                 self._append_jsonl(ERROR_JSONL, {
                     "error_id": str(uuid.uuid4()),
                     "timestamp": payload["timestamp"],
-                    "level": "ERROR" if payload["http_status"] >= 500 else "WARN",
+                    "level": level,
                     "component": "api",
                     "request_id": payload["request_id"],
-                    "error_code": str(payload["http_status"]),
-                    "message": payload["error_context"]["message"],
+                    "error_code": err_type or str(payload["http_status"]),
+                    "message": msg,
+                    "endpoint": path,
+                    "endpoint_group": payload["endpoint_group"],
+                    "user_class": payload.get("user_class"),
+                    "scenario_id": payload.get("scenario_id"),
                     "env": ENV,
                     "service_version": SERVICE_VERSION,
                     "container_id": payload["container_id"],
@@ -206,6 +296,7 @@ class RequestLoggingMiddleware(MiddlewareMixin):
                     session_id=payload["session_id"],
                     user_id=payload["user_id"],
                     user_role=payload["user_role"],
+                    user_class=payload["user_class"],
                     timestamp=payload["timestamp"],
                     api_method=payload["api_method"],
                     endpoint=payload["endpoint"],
