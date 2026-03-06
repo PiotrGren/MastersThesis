@@ -241,6 +241,8 @@ class RequestLoggingMiddleware(MiddlewareMixin):
                     "message": msg,
                     "error_type": err_type,
                 }
+                
+                payload['success'] = False
 
                 level = "ERROR" if payload["http_status"] >= 500 else "WARN"
 

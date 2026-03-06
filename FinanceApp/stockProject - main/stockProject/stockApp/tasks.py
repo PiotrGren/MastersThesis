@@ -36,7 +36,7 @@ CONTAINER_ID = os.getenv("HOSTNAME", None)
 
 EXPERIMENT_ID = os.getenv("EXPERIMENT_ID", None)
 PHASE = os.getenv("PHASE", None)
-SCENARIO = os.getenv("SCENARIO", None)
+SCENARIO = os.getenv("SCENARIO_ID", None)
 
 
 def _utc() -> str:
@@ -138,7 +138,7 @@ def _safe_update_single_actual_stockrate(company: Company, rate_value: float) ->
 def match_scheduler(self, *, parent_request_id: Optional[str] = None) -> str:
     """
     Układa paczki spółek i kolejkuje dopasowania (match_execute).
-    parent_request_id: jeśli wywołane z widoku (API) – korelacja HTTP→Celery.
+    parent_request_id: jeśli wywołane z widoku (API) - korelacja HTTP → Celery.
     """
     t0 = time.perf_counter()
     db_ms = 0.0
@@ -148,7 +148,7 @@ def match_scheduler(self, *, parent_request_id: Optional[str] = None) -> str:
         company_ids = list(Company.objects.values_list("id", flat=True))
         db_ms += (time.perf_counter() - t_db) * 1000.0
 
-        # Prosty batching po 10 spółek (wystarczy do eksperymentów)
+        # Prosty batching po 10 spółek (wystarcza do eksperymentów)
         batch_size = int(os.getenv("MATCH_BATCH_SIZE", "10"))
         batches: List[List[int]] = [
             company_ids[i : i + batch_size] for i in range(0, len(company_ids), batch_size)
@@ -364,7 +364,7 @@ def match_execute(
 @shared_task(bind=True, acks_late=True, time_limit=120, soft_time_limit=90)
 def rates_update(self, *, parent_request_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    Aktualizuje kursy (StockRate) – utrzymuje dokładnie jeden actual=True na firmę.
+    Aktualizuje kursy (StockRate) - utrzymuje dokładnie jeden actual=True na firmę.
     """
     t0 = time.perf_counter()
     db_ms = 0.0

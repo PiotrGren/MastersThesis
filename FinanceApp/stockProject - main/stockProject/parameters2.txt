@@ -1,0 +1,8 @@
+SCENARIO_ID,USERS,SPAWN_RATE,TIME,CLASSES,WAIT_MIN,WAIT_MAX,RATES_N
+an_funds_low,30,3,45m,ActiveUser:FundsInjectorUser,0.2,0.4,3
+an_funds_mid,50,6,45m,ActiveUser:FundsInjectorUser,0.15,0.3,3
+an_funds_spike,40,12,30m,FundsInjectorUser,0.1,0.2,3
+an_funds_mixed,60,10,45m,ReadOnlyUser:ActiveUser:FundsInjectorUser,0.15,0.25,3
+an_market_panic,120,30,30m,ActiveUserWithMarketAnalize,0.1,0.15,3
+an_erratic_mix,100,20,45m,ReadOnlyUser:ActiveUserWithMarketAnalize,0.1,0.2,3
+an_sell_heavy,80,15,45m,ActiveUserWithMarketAnalize,0.15,0.25,3

@@ -13,13 +13,19 @@ LOG_DIR = Path(os.getenv("LOG_DIR", "/logs")).resolve()
 CLIENT_JSONL = LOG_DIR / os.getenv("LOCUST_CLIENT_JSONL", "locust_client_log.jsonl")
 
 # wait-time (sekundy)
-WAIT_MIN = float(os.getenv("TIME_BETWEEN_REQUESTS_MIN", "0.5"))
-WAIT_MAX = float(os.getenv("TIME_BETWEEN_REQUESTS_MAX", "1.5"))
+WAIT_MIN = float(os.getenv("TIME_BETWEEN_REQUESTS_MIN", "0.05"))
+WAIT_MAX = float(os.getenv("TIME_BETWEEN_REQUESTS_MAX", "0.2"))
 
 # ile ostatnich kursów dla endpointu rates
 RATES_N = int(os.getenv("RATES_N", "3"))
 
-SELECTED_CLASSES = set(os.getenv("LOCUST_CLASSES", "").split(":")) if os.getenv("LOCUST_CLASSES") else set()
+raw = os.getenv("LOCUST_CLASSES", "")
+if raw:
+    # akceptuj oba formaty, na wszelki wypadek
+    raw = raw.replace(":", ",")
+    SELECTED_CLASSES = {c.strip() for c in raw.split(",") if c.strip()}
+else:
+    SELECTED_CLASSES = set()
 
 def _enable(cls_name: str) -> bool:
     return (not SELECTED_CLASSES) or (cls_name in SELECTED_CLASSES)
@@ -108,10 +114,6 @@ class BaseUser(HttpUser):
                 "email": self.email,
                 "name": fake.first_name(),
                 "surname": fake.last_name(),
-                # opcjonalnie startowe salda – zależnie od Twoich walidacji
-                "money": float(random.randint(1000, 8500)),
-                "moneyAfterTransactions": 0.0,
-                "role": "user",
             },
             name="AUTH: signUp",
             auth=False,
@@ -128,28 +130,27 @@ class BaseUser(HttpUser):
         except Exception:
             self.token = None
             
-        # 3) Create company
-        company_name = fake.company()
-        comp_resp = self._post(
-            "/api/companies/",
-            json={"name": company_name},
-            name="COMPANY: create"
-        )
-        
-        self.company_id = None
-        if comp_resp is not None and comp_resp.status_code == 201:
-            list_resp = self._get("/api/companies/", name="COMPANY: list (bootstrap)")
-            if list_resp is not None and list_resp.status_code == 200:
-                try:
-                    companies = list_resp.json()
-                    for c in companies:
-                        if c.get("name") == company_name:
-                            self.company_id = c.get("id")
-                            break
-                except Exception:
-                    pass
-        if not self.company_id:
-            self.company_id = 1
+        # 3) Airdrop DEBUG
+        if self.token and self.__class__.__name__ != "ReadOnlyUser":
+            self._post(
+                "/api/debug/airdrop/",
+                json={},
+                name="DEBUG: airdrop",
+                auth=True
+            )
+            
+        # 4) Create company
+        resp = self._get("/api/companies/", name="COMPANY: list (bootstrap)")
+        if resp and resp.status_code == 200:
+            companies = resp.json()
+            if isinstance(companies, dict):
+                companies = companies.get("results", [])
+                
+            self.company_ids = [c["id"] for c in companies if "id" in c]
+            if not self.company_ids:
+                self.company_ids = [1]
+        else:
+            self.company_ids = [1]
         
 
     # --------- helpery HTTP ---------
@@ -165,19 +166,87 @@ class BaseUser(HttpUser):
         return h
 
     def _get(self, url: str, name: str, auth: bool = True, params: Optional[Dict[str, Any]] = None):
-        return self.client.get(url, headers=self._headers(auth), name=name, params=params or {}, context={"userClass": self.request_class})
-
+        return self.client.get(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            params=params or {},
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
     def _post(self, url: str, json: Dict[str, Any], name: str, auth: bool = True):
-        return self.client.post(url, headers=self._headers(auth), name=name, json=json, context={"userClass": self.request_class})
-
+        return self.client.post(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            json=json,
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
     def _delete(self, url: str, name: str, auth: bool = True):
-        return self.client.delete(url, headers=self._headers(auth), name=name, context={"userClass": self.request_class})
+        return self.client.delete(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
+
+
+"""class PortfolioMixin:
+    def init_portfolio(self):
+        # company_id -> amount
+        self.portfolio = {}
+
+    def add_stock(self, company_id: int, amount: int):
+        self.portfolio[company_id] = self.portfolio.get(company_id, 0) + amount
+
+    def remove_stock(self, company_id: int, amount: int):
+        if company_id not in self.portfolio:
+            return
+        self.portfolio[company_id] -= amount
+        if self.portfolio[company_id] <= 0:
+            del self.portfolio[company_id]
+
+    def has_stocks(self) -> bool:
+        return bool(self.portfolio)
+
+    def random_owned_company(self) -> int | None:
+        if not self.portfolio:
+            return None
+        return random.choice(list(self.portfolio.keys()))
+"""
 
 
 # --------- Profile 1: Read-only (przeglądarka) ---------
 class ReadOnlyUser(BaseUser):
     request_class = "ReadOnlyUser"
 
+    @task(3)
+    def list_companies(self):
+        self._get("/api/companies/", name="COMPANY: list")
+
+    @task(2)
+    def read_rates(self):
+        self._get("/api/companies/rates/", name="COMPANY: rates", params={"n": RATES_N})
+
+    @task(2)
+    def list_buy_offers(self):
+        self._get("/api/buyoffers/", name="BUY: list")
+
+    @task(2)
+    def list_sell_offers(self):
+        self._get("/api/selloffers/", name="SELL: list")
+
+    @task(1)
+    def user_stocks(self):
+        self._get("/api/user/stocks/", name="USER: stocks")
+
+    @task(1)
+    def user_info(self):
+        self._get("/api/user/info/", name="USER: info")
+    
+    """OLD
     @task(2)
     def list_companies(self):
         self._get("/api/companies/", name="COMPANY: list")
@@ -185,12 +254,137 @@ class ReadOnlyUser(BaseUser):
     @task(1)
     def read_rates(self):
         self._get(f"/api/companies/rates/", name="COMPANY: rates", params={"n": RATES_N})
+    """
+
+# --------- Profile 2: Active user ---------
+class ActiveUser(BaseUser):
+    request_class = "ActiveUser"
+
+    def on_start(self):
+        super().on_start()
+        
+    def get_owned_stocks(self):
+        r = self.client.get(
+            "/api/user/stocks/",
+            name="USER: stocks",
+            headers=self._headers(),
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        stocks = data if isinstance(data, list) else data.get("results", [])
+
+        return [
+            s for s in stocks
+            if s.get("amount", 0) > 0 and s.get("company") is not None
+        ]
 
 
-# --------- Profile 2: Active buyer ---------
-class ActiveBuyer(BaseUser):
-    request_class = "ActiveBuyer"
 
+    @task(3)
+    def create_buy_offer(self):
+        if not self.company_ids:
+            return
+        
+        company_id = random.choice(self.company_ids)
+        amount = random.randint(1, 5)
+
+        self._post(
+            "/api/buyoffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="BUY: create",
+        )
+
+
+    @task(2)
+    def create_sell_offer(self):
+        owned = self.get_owned_stocks()
+
+        # NIE MASZ AKCJI → NIE SPRZEDAJESZ
+        if not owned:
+            return
+
+        stock = random.choice(owned)
+        company_id = (
+            stock["company"]
+            if isinstance(stock["company"], int)
+            else stock["company"]["id"]
+        )
+
+        max_amt = int(stock["amount"])
+        if max_amt <= 0:
+            return
+
+        amount = random.randint(1, max_amt)
+
+        self._post(
+            "/api/selloffers/",
+            json={
+                "company": company_id,
+                "startAmount": amount,
+                "amount": amount,
+            },
+            name="SELL: create",
+        )
+
+
+
+    @task(1)
+    def cancel_buy_offer(self):
+        resp = self._get("/api/buyoffers/", name="BUY: list (for cancel)")
+        if resp and resp.status_code == 200:
+            offers = resp.json()
+            if offers:
+                offer = random.choice(offers)
+                pk = offer.get("id") or offer.get("pk")
+                if not pk:
+                    return
+                self._delete(f"/api/buyoffers/{pk}/", name="BUY: cancel")
+
+    @task(1)
+    def user_info(self):
+        self._get("/api/user/info/", name="USER: info")
+
+
+
+    """OLD
+    class ActiveUser(BaseUser):
+    request_class = "ActiveUser"
+
+    @task(2)
+    def list_companies(self):
+        self._get("/api/companies/", name="COMPANY: list")
+
+    @task(2)
+    def create_buy_offer(self):
+        company_id = getattr(self, "company_id", 1)
+        amount = random.randint(1, 5)
+        self._post(
+            "/api/buyoffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="BUY: create",
+        )
+
+    @task(2)
+    def create_sell_offer(self):
+        company_id = getattr(self, "company_id", 1)
+        amount = random.randint(1, 5)
+        self._post(
+            "/api/selloffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="SELL: create",
+        )
+
+    @task(1)
+    def user_stocks(self):
+        self._get("/api/user/stocks/", name="USER: stocks")
+
+    @task(1)
+    def user_funds(self):
+        self._get("/api/user/funds/", name="USER: funds")
+        
     @task(3)
     def create_buy_offer(self):
         #company_id = random.randint(1, 10)
@@ -211,12 +405,98 @@ class ActiveBuyer(BaseUser):
     @task(1)
     def list_buy_offers(self):
         self._get("/api/buyoffers/", name="BUY: list")
+    """
 
 
 # --------- Profile 3: Active seller ---------
-class ActiveSeller(BaseUser):
-    request_class = "ActiveSeller"
+class ActiveUserWithMarketAnalize(BaseUser):
+    request_class = "ActiveUserWithMarketAnalize"
 
+    limit_buy_in_task = 2
+    limit_sell_in_task = 3
+
+    def on_start(self):
+        super().on_start()
+        #self.init_portfolio()
+        
+    def get_owned_stocks(self):
+        r = self.client.get(
+            "/api/user/stocks/",
+            name="USER: stocks",
+            headers=self._headers(),
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        stocks = data if isinstance(data, list) else data.get("results", [])
+
+        return [
+            s for s in stocks
+            if s.get("amount", 0) > 0 and s.get("company") is not None
+        ]
+
+
+    @task(3)
+    def market_rates(self):
+        self._get(
+            "/api/companies/rates/",
+            name="COMPANY: rates (analyze)",
+            params={"n": RATES_N},
+        )
+
+    @task(2)
+    def money_check(self):
+        self._get("/api/users/money-check/", name="USER: money-check")
+
+    @task(2)
+    def do_trading_burst(self):
+        # --- BUY ---
+        if self.company_ids:
+            for _ in range(random.randint(0, self.limit_buy_in_task)):
+                company_id = random.choice(self.company_ids)
+                amount = random.randint(1, 5)
+
+                resp = self._post(
+                    "/api/buyoffers/",
+                    json={"company": company_id, "startAmount": amount, "amount": amount},
+                    name="BUY: create (analyze)",
+                )
+
+
+        # --- SELL ---
+        limit = random.randint(0, self.limit_sell_in_task)
+        for _ in range(limit):
+            owned = self.get_owned_stocks()
+            if not owned:
+                break
+
+            stock = random.choice(owned)
+            company_id = (
+                stock["company"]
+                if isinstance(stock["company"], int)
+                else stock["company"]["id"]
+            )
+
+            max_amt = int(stock["amount"])
+            if max_amt <= 0:
+                continue
+
+            amount = random.randint(1, max_amt)
+
+            self._post(
+                "/api/selloffers/",
+                json={
+                    "company": company_id,
+                    "startAmount": amount,
+                    "amount": amount,
+                },
+                name="SELL: create (analyze)",
+            )
+
+
+    """OLD ActiveSeller
     @task(3)
     def create_sell_offer(self):
         #company_id = random.randint(1, 10)
@@ -237,11 +517,25 @@ class ActiveSeller(BaseUser):
     @task(1)
     def list_sell_offers(self):
         self._get("/api/selloffers/", name="SELL: list")
+    """
+
+class FundsInjectorUser(BaseUser):
+    request_class = "FundsInjector"
+
+    @task(1)
+    def inject_funds(self):
+        self._post(
+            "/api/user/funds/",
+            json={"money": random.randint(500, 2000)},
+            name="USER: funds PUT"
+        )
+
         
         
 
 # Wagi klas – 0 = wyłącz
 BaseUser.weight   = 0
-ReadOnlyUser.weight  = 1 if _enable("ReadOnlyUser")  else 0
-ActiveBuyer.weight   = 1 if _enable("ActiveBuyer")   else 0
-ActiveSeller.weight  = 1 if _enable("ActiveSeller")  else 0
+ReadOnlyUser.weight  = 4 if _enable("ReadOnlyUser")  else 0
+ActiveUser.weight   = 2 if _enable("ActiveUser")   else 0
+ActiveUserWithMarketAnalize.weight  = 1 if _enable("ActiveUserWithMarketAnalize")  else 0
+FundsInjectorUser.weight = 1 if _enable("FundsInjectorUser") else 0

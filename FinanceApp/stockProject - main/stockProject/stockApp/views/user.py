@@ -3,9 +3,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
-from stockApp.models import Stock, CustomUser
+from stockApp.models import Stock, CustomUser, Company
 from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
 from stockApp.views.mixins import RequestContextMixin
+
+import random 
+import uuid
 
 
 class FundsView(RequestContextMixin, APIView):
@@ -77,9 +80,59 @@ class UsersMoneyCheckView(RequestContextMixin, APIView):
         avg_after = round(total_after / count, 2)
 
         return Response({"money": avg_money, "moneyAT": avg_after}, status=status.HTTP_200_OK)
+    
 
+class DebugAirdropView(RequestContextMixin, APIView):
+    """
+    POST /api/debug/airdrop
+    DEBUG ONLY: Rozdaje użytkownikowi losowe akcje na start (IPO),
+    żeby miał co sprzedawać w symulacji.
+    """
+    permission_classes = [IsAuthenticated]
 
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        
+        # Zabezpieczenie: Jeśli użytkownik już coś ma, nie dajemy więcej
+        if Stock.objects.filter(user=user, amount__gt=0).exists():
+            return Response(
+                {'message': 'User already has stocks', 'requestId': str(uuid.uuid4())}, 
+                status=status.HTTP_200_OK
+            )
 
+        # Pobierz wszystkie firmy
+        companies = list(Company.objects.all())
+        if not companies:
+            return Response(
+                {'error': 'No companies in market'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Wylosuj ile firm posiada user (np. od 0 do 3)
+        # 0 oznacza, że user startuje tylko z gotówką (ważny przypadek dla ML)
+        number_of_companies = random.choices([0, 1, 2, 3], weights=[10, 40, 30, 20], k=1)[0]
+        
+        created_stocks_info = []
+
+        if number_of_companies > 0:
+            assigned_companies = random.sample(companies, k=min(number_of_companies, len(companies)))
+            
+            for company in assigned_companies:
+                # Losowa ilość akcji (Integery, np. 100 - 5000)
+                amount = random.randint(100, 5000)
+                
+                Stock.objects.create(
+                    user=user,
+                    company=company,
+                    amount=amount
+                )
+                created_stocks_info.append(f"{company.name}: {amount}")
+
+        return Response({
+            'message': 'Airdrop successful', 
+            'stocks_assigned': created_stocks_info,
+            'requestId': str(uuid.uuid4())
+        }, status=status.HTTP_201_CREATED)
 
 """
 OLD

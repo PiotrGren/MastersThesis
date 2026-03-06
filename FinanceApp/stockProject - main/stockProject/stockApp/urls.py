@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from stockApp.views.auth import SignUpView, SignInView
 from stockApp.views.companies import CompanyViewSet, CompanyRatesView
 from stockApp.views.offers import BuyOfferViewSet, SellOfferViewSet
-from stockApp.views.user import FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView
+from stockApp.views.user import FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView, DebugAirdropView
 
 
 router = DefaultRouter()
@@ -22,6 +22,9 @@ urlpatterns = [
     path('user/stocks/', UserStocksView.as_view(), name='user-stocks'),
     path('user/info/', UserInfoView.as_view(), name='user-info'),
     path('users/money-check/', UsersMoneyCheckView.as_view(), name='users-money-check'),
+    
+    # Airdrop
+    path('debug/airdrop/', DebugAirdropView.as_view(), name='debug-airdrop'),
 
     # Companies
     path('companies/rates/', CompanyRatesView.as_view(), name='company-rates'),

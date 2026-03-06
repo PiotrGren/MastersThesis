@@ -1,0 +1,4 @@
+SCENARIO_ID,USERS,SPAWN_RATE,TIME,CLASSES,WAIT_MIN,WAIT_MAX,RATES_N
+cls_mixed_low,150,15,3m,ReadOnlyUser:ActiveUser:ActiveUserWithMarketAnalize,0.1,0.2,3
+cls_mixed_lowa,70,5,2m,ReadOnlyUser:ActiveUser,0.1,0.2,3
+cls_mixed_lowb,30,2,1m,ReadOnlyUser,0.2,0.4,3

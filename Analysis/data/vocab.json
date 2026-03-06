@@ -1,0 +1,14 @@
+{
+  "<PAD>": 0,
+  "<UNK>": 1,
+  "GET COMPANY": 2,
+  "GET USER": 3,
+  "POST BUY": 4,
+  "GET BUY": 5,
+  "GET SELL": 6,
+  "GET GET": 7,
+  "DELETE BUY": 8,
+  "POST SELL": 9,
+  "POST AUTH": 10,
+  "validation SYSTEM_ERROR": 11
+}

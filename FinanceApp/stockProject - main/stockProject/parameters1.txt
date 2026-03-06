@@ -1,0 +1,13 @@
+SCENARIO_ID,USERS,SPAWN_RATE,TIME,CLASSES,WAIT_MIN,WAIT_MAX,RATES_N
+cls_activebs_medium,100,8,20m,ActiveUser,0.15,0.3,3
+cls_activebs_heavy,240,20,30m,ActiveUser,0.1,0.2,3
+cls_read_medium,80,6,20m,ReadOnlyUser,0.15,0.3,3
+cls_read_heavy,200,10,30m,ReadOnlyUser,0.1,0.2,3
+cls_activewa_medium,80,8,20m,ActiveUserWithMarketAnalize,0.15,0.3,3
+cls_activewa_heavy,160,20,30m,ActiveUserWithMarketAnalize,0.1,0.2,3
+cls_mixed_low,150,5,30m,ReadOnlyUser:ActiveUser:ActiveUserWithMarketAnalize,0.15,0.3,3
+cls_mixed_high,300,25,30m,ReadOnlyUser:ActiveUser:ActiveUserWithMarketAnalize,0.1,0.2,3
+cls_burst_trade,240,30,30m,ActiveUser:ActiveUserWithMarketAnalize,0.1,0.2,3
+read_vs_activebs,100,10,10m,ReadOnlyUser:ActiveUser,0.1,0.25,3
+read_vs_activewa,100,10,10m,ReadOnlyUser:ActiveUserWithMarketAnalize,0.1,0.25,3
+activebs_vs_activewa,120,15,10m,ActiveUser:ActiveUserWithMarketAnalize,0.1,0.25,3

@@ -6,7 +6,7 @@ set -euo pipefail
 : "${USERS:=50}"                                  # liczba wirtualnych userów
 : "${SPAWN_RATE:=5}"                              # przyrost userów / sekundę
 : "${TIME:=}"                                   # czas testu (np. 5m, 30s, 1h)
-: "${LOCUST_CLASSES:=ReadOnlyUser,ActiveBuyer,ActiveSeller}"  # klasy z locustfile.py
+: "${LOCUST_CLASSES:=ReadOnlyUser,ActiveUser,ActiveUserWtihMarketAnalize}"  # klasy z locustfile.py
 : "${LOG_DIR:=/logs}"                             # wspólny wolumen na logi/csv
 : "${TIME_BETWEEN_REQUESTS_MIN:=0.5}"
 : "${TIME_BETWEEN_REQUESTS_MAX:=1.5}"
@@ -20,6 +20,7 @@ exec locust \
   --host "$LOCUST_HOST" \
   -u "$USERS" \
   -r "$SPAWN_RATE" \
+  --run-time "$TIME" \
   --csv="$LOG_DIR/locust" \
   --only-summary \
   --loglevel INFO

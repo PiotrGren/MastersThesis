@@ -51,7 +51,7 @@ class CompanyViewSet(RequestContextMixin, viewsets.ViewSet):
         rate_ser.save()
 
         # 3) startowy stan akcji dla właściciela (jak w starym kodzie)
-        Stock.objects.create(amount=10000, user=request.user, company=company)
+       # Stock.objects.create(amount=10000, user=request.user, company=company)
 
         return Response({"message": "Company created successfully."}, status=status.HTTP_201_CREATED)
 

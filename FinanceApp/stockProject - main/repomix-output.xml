@@ -1,0 +1,3895 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: loadTestingApp/locustfile.py, stockProject/stockApp/**/*.py, stockProject/stockProject/**/*.py
+- Files matching these patterns are excluded: **/migrations/**, **/__init__.py, **/tests.py
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+loadTestingApp/
+  locustfile.py
+stockProject/
+  stockApp/
+    management/
+      commands/
+        bootstrap_market.py
+        clear_test_data.py
+    middleware/
+      LogRequestMiddleware.py
+      request_logging.py
+    models/
+      balanceUpdate.py
+      buyOffer.py
+      company.py
+      cpu.py
+      errorLog.py
+      requestLog.py
+      sellOffer.py
+      stock.py
+      stockRate.py
+      tradeLog.py
+      transaction.py
+      user.py
+    serializers/
+      buyOfferSerializer.py
+      companySerializer.py
+      helpers.py
+      sellOfferSerializer.py
+      stockRateSerializer.py
+      stockSerializer.py
+      updateUserSerializer.py
+      userInfoSerializer.py
+      userSerializer.py
+    views/
+      auth.py
+      companies.py
+      mixins.py
+      offers.py
+      user.py
+    admin.py
+    apps.py
+    tasks.py
+    urls.py
+  stockProject/
+    asgi.py
+    celery.py
+    settings.py
+    urls.py
+    wsgi.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="loadTestingApp/locustfile.py">
+import os
+import json
+import uuid
+import random
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+from faker import Faker
+from locust import HttpUser, task, between, events
+
+# -------- Konfiguracja --------
+LOG_DIR = Path(os.getenv("LOG_DIR", "/logs")).resolve()
+CLIENT_JSONL = LOG_DIR / os.getenv("LOCUST_CLIENT_JSONL", "locust_client_log.jsonl")
+
+# wait-time (sekundy)
+WAIT_MIN = float(os.getenv("TIME_BETWEEN_REQUESTS_MIN", "0.05"))
+WAIT_MAX = float(os.getenv("TIME_BETWEEN_REQUESTS_MAX", "0.2"))
+
+# ile ostatnich kursów dla endpointu rates
+RATES_N = int(os.getenv("RATES_N", "3"))
+
+raw = os.getenv("LOCUST_CLASSES", "")
+if raw:
+    # akceptuj oba formaty, na wszelki wypadek
+    raw = raw.replace(":", ",")
+    SELECTED_CLASSES = {c.strip() for c in raw.split(",") if c.strip()}
+else:
+    SELECTED_CLASSES = set()
+
+def _enable(cls_name: str) -> bool:
+    return (not SELECTED_CLASSES) or (cls_name in SELECTED_CLASSES)
+
+fake = Faker()
+
+
+def append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        # nie blokuj testu obciążeniowego
+        pass
+
+
+# ----- Listener: zapisuj surowe metryki klienta do JSONL (korelacja z X-Request-ID) -----
+@events.request.add_listener
+def _log_request(request_type, name, response_time, response_length, response, context, exception, **kwargs):
+    """
+    Zapisujemy to, co widzi klient Locusta (dla diagnostyki i porównań z backendem).
+    Główne źródło prawdy to backendowe JSONL — to jest pomocnicze.
+    """
+    try:
+        req_id = None
+        status = None
+        if response is not None:
+            # DRF/Django – nasz middleware dokłada X-Request-ID
+            req_id = response.headers.get("X-Request-ID")
+            status = response.status_code
+
+        row = {
+            "timestamp": None,  # celowo puste — czas weźmiemy z backendowych logów (UTC)
+            "client": "locust",
+            "request_type": request_type,      # GET/POST/...
+            "name": name,                      # 'nazwa' z wywołania self.client.*(..., name="...")
+            "response_time_ms": response_time, # co widzi klient
+            "response_size": response_length,
+            "status": status,
+            "request_id": req_id,
+            "exception": str(exception) if exception else None,
+            "context": context or {},
+        }
+        append_jsonl(CLIENT_JSONL, row)
+    except Exception:
+        pass
+
+
+# --------- Klasa bazowa użytkownika ---------
+class BaseUser(HttpUser):
+    """
+    - Rejestracja + logowanie w on_start()
+    - Stały X-Session-ID per user
+    - Authorization: Token <token> dla wszystkich wywołań po signIn
+    - Dodatkowe nagłówki: X-Scenario-Id, X-Request-Class
+    """
+    abstract = True
+    wait_time = between(WAIT_MIN, WAIT_MAX)
+
+    token: Optional[str] = None
+    session_id: str
+    username: str
+    password: str
+    email: str
+
+    # można nadpisać w podklasach
+    request_class: str = "BaseUser"
+    scenario_id: str = "default"
+
+    def on_start(self):
+        # identyfikatory i dane nowego usera
+        self.session_id = str(uuid.uuid4())
+        self.username = f"{fake.user_name()}_{uuid.uuid4().hex[:8]}"
+        self.password = fake.password(length=12)
+        self.email = f"{self.username}@example.test"
+        
+        self.scenario_id = os.getenv("SCENARIO_ID", "default")
+
+        # 1) SignUp
+        self._post(
+            "/api/signUp/",
+            json={
+                "username": self.username,
+                "password": self.password,
+                "email": self.email,
+                "name": fake.first_name(),
+                "surname": fake.last_name(),
+            },
+            name="AUTH: signUp",
+            auth=False,
+        )
+        # 2) SignIn
+        resp = self._post(
+            "/api/signIn/",
+            json={"username": self.username, "password": self.password},
+            name="AUTH: signIn",
+            auth=False,
+        )
+        try:
+            self.token = resp.json().get("token") if resp is not None else None
+        except Exception:
+            self.token = None
+            
+        # 3) Airdrop DEBUG
+        if self.token and self.__class__.__name__ != "ReadOnlyUser":
+            self._post(
+                "/api/debug/airdrop/",
+                json={},
+                name="DEBUG: airdrop",
+                auth=True
+            )
+            
+        # 4) Create company
+        resp = self._get("/api/companies/", name="COMPANY: list (bootstrap)")
+        if resp and resp.status_code == 200:
+            companies = resp.json()
+            if isinstance(companies, dict):
+                companies = companies.get("results", [])
+                
+            self.company_ids = [c["id"] for c in companies if "id" in c]
+            if not self.company_ids:
+                self.company_ids = [1]
+        else:
+            self.company_ids = [1]
+        
+
+    # --------- helpery HTTP ---------
+    def _headers(self, auth: bool = True) -> Dict[str, str]:
+        h = {
+            "Content-Type": "application/json",
+            "X-Session-ID": self.session_id,
+            "X-Scenario-Id": self.scenario_id,
+            "X-Request-Class": self.request_class,
+        }
+        if auth and self.token:
+            h["Authorization"] = f"Token {self.token}"
+        return h
+
+    def _get(self, url: str, name: str, auth: bool = True, params: Optional[Dict[str, Any]] = None):
+        return self.client.get(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            params=params or {},
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
+    def _post(self, url: str, json: Dict[str, Any], name: str, auth: bool = True):
+        return self.client.post(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            json=json,
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
+    def _delete(self, url: str, name: str, auth: bool = True):
+        return self.client.delete(
+            url,
+            headers=self._headers(auth),
+            name=name,
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        
+
+
+"""class PortfolioMixin:
+    def init_portfolio(self):
+        # company_id -> amount
+        self.portfolio = {}
+
+    def add_stock(self, company_id: int, amount: int):
+        self.portfolio[company_id] = self.portfolio.get(company_id, 0) + amount
+
+    def remove_stock(self, company_id: int, amount: int):
+        if company_id not in self.portfolio:
+            return
+        self.portfolio[company_id] -= amount
+        if self.portfolio[company_id] <= 0:
+            del self.portfolio[company_id]
+
+    def has_stocks(self) -> bool:
+        return bool(self.portfolio)
+
+    def random_owned_company(self) -> int | None:
+        if not self.portfolio:
+            return None
+        return random.choice(list(self.portfolio.keys()))
+"""
+
+
+# --------- Profile 1: Read-only (przeglądarka) ---------
+class ReadOnlyUser(BaseUser):
+    request_class = "ReadOnlyUser"
+
+    @task(3)
+    def list_companies(self):
+        self._get("/api/companies/", name="COMPANY: list")
+
+    @task(2)
+    def read_rates(self):
+        self._get("/api/companies/rates/", name="COMPANY: rates", params={"n": RATES_N})
+
+    @task(2)
+    def list_buy_offers(self):
+        self._get("/api/buyoffers/", name="BUY: list")
+
+    @task(2)
+    def list_sell_offers(self):
+        self._get("/api/selloffers/", name="SELL: list")
+
+    @task(1)
+    def user_stocks(self):
+        self._get("/api/user/stocks/", name="USER: stocks")
+
+    @task(1)
+    def user_info(self):
+        self._get("/api/user/info/", name="USER: info")
+    
+    """OLD
+    @task(2)
+    def list_companies(self):
+        self._get("/api/companies/", name="COMPANY: list")
+
+    @task(1)
+    def read_rates(self):
+        self._get(f"/api/companies/rates/", name="COMPANY: rates", params={"n": RATES_N})
+    """
+
+# --------- Profile 2: Active user ---------
+class ActiveUser(BaseUser):
+    request_class = "ActiveUser"
+
+    def on_start(self):
+        super().on_start()
+        
+    def get_owned_stocks(self):
+        r = self.client.get(
+            "/api/user/stocks/",
+            name="USER: stocks",
+            headers=self._headers(),
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        stocks = data if isinstance(data, list) else data.get("results", [])
+
+        return [
+            s for s in stocks
+            if s.get("amount", 0) > 0 and s.get("company") is not None
+        ]
+
+
+
+    @task(3)
+    def create_buy_offer(self):
+        if not self.company_ids:
+            return
+        
+        company_id = random.choice(self.company_ids)
+        amount = random.randint(1, 5)
+
+        self._post(
+            "/api/buyoffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="BUY: create",
+        )
+
+
+    @task(2)
+    def create_sell_offer(self):
+        owned = self.get_owned_stocks()
+
+        # NIE MASZ AKCJI → NIE SPRZEDAJESZ
+        if not owned:
+            return
+
+        stock = random.choice(owned)
+        company_id = (
+            stock["company"]
+            if isinstance(stock["company"], int)
+            else stock["company"]["id"]
+        )
+
+        max_amt = int(stock["amount"])
+        if max_amt <= 0:
+            return
+
+        amount = random.randint(1, max_amt)
+
+        self._post(
+            "/api/selloffers/",
+            json={
+                "company": company_id,
+                "startAmount": amount,
+                "amount": amount,
+            },
+            name="SELL: create",
+        )
+
+
+
+    @task(1)
+    def cancel_buy_offer(self):
+        resp = self._get("/api/buyoffers/", name="BUY: list (for cancel)")
+        if resp and resp.status_code == 200:
+            offers = resp.json()
+            if offers:
+                offer = random.choice(offers)
+                pk = offer.get("id") or offer.get("pk")
+                if not pk:
+                    return
+                self._delete(f"/api/buyoffers/{pk}/", name="BUY: cancel")
+
+    @task(1)
+    def user_info(self):
+        self._get("/api/user/info/", name="USER: info")
+
+
+
+    """OLD
+    class ActiveUser(BaseUser):
+    request_class = "ActiveUser"
+
+    @task(2)
+    def list_companies(self):
+        self._get("/api/companies/", name="COMPANY: list")
+
+    @task(2)
+    def create_buy_offer(self):
+        company_id = getattr(self, "company_id", 1)
+        amount = random.randint(1, 5)
+        self._post(
+            "/api/buyoffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="BUY: create",
+        )
+
+    @task(2)
+    def create_sell_offer(self):
+        company_id = getattr(self, "company_id", 1)
+        amount = random.randint(1, 5)
+        self._post(
+            "/api/selloffers/",
+            json={"company": company_id, "startAmount": amount, "amount": amount},
+            name="SELL: create",
+        )
+
+    @task(1)
+    def user_stocks(self):
+        self._get("/api/user/stocks/", name="USER: stocks")
+
+    @task(1)
+    def user_funds(self):
+        self._get("/api/user/funds/", name="USER: funds")
+        
+    @task(3)
+    def create_buy_offer(self):
+        #company_id = random.randint(1, 10)
+        company_id = getattr(self, "company_id", 1)
+        #max_price = round(random.uniform(10, 50), 2)
+        amount = random.randint(1, 5)
+
+        self._post(
+            "/api/buyoffers/",
+            json={
+                "company": company_id,
+                "startAmount": amount,
+                "amount": amount,
+            },
+            name="BUY: create",
+        )
+
+    @task(1)
+    def list_buy_offers(self):
+        self._get("/api/buyoffers/", name="BUY: list")
+    """
+
+
+# --------- Profile 3: Active seller ---------
+class ActiveUserWithMarketAnalize(BaseUser):
+    request_class = "ActiveUserWithMarketAnalize"
+
+    limit_buy_in_task = 2
+    limit_sell_in_task = 3
+
+    def on_start(self):
+        super().on_start()
+        #self.init_portfolio()
+        
+    def get_owned_stocks(self):
+        r = self.client.get(
+            "/api/user/stocks/",
+            name="USER: stocks",
+            headers=self._headers(),
+            context={"userClass": self.request_class, "scenarioId": self.scenario_id},
+        )
+        if r.status_code != 200:
+            return []
+
+        data = r.json()
+        stocks = data if isinstance(data, list) else data.get("results", [])
+
+        return [
+            s for s in stocks
+            if s.get("amount", 0) > 0 and s.get("company") is not None
+        ]
+
+
+    @task(3)
+    def market_rates(self):
+        self._get(
+            "/api/companies/rates/",
+            name="COMPANY: rates (analyze)",
+            params={"n": RATES_N},
+        )
+
+    @task(2)
+    def money_check(self):
+        self._get("/api/users/money-check/", name="USER: money-check")
+
+    @task(2)
+    def do_trading_burst(self):
+        # --- BUY ---
+        if self.company_ids:
+            for _ in range(random.randint(0, self.limit_buy_in_task)):
+                company_id = random.choice(self.company_ids)
+                amount = random.randint(1, 5)
+
+                resp = self._post(
+                    "/api/buyoffers/",
+                    json={"company": company_id, "startAmount": amount, "amount": amount},
+                    name="BUY: create (analyze)",
+                )
+
+
+        # --- SELL ---
+        limit = random.randint(0, self.limit_sell_in_task)
+        for _ in range(limit):
+            owned = self.get_owned_stocks()
+            if not owned:
+                break
+
+            stock = random.choice(owned)
+            company_id = (
+                stock["company"]
+                if isinstance(stock["company"], int)
+                else stock["company"]["id"]
+            )
+
+            max_amt = int(stock["amount"])
+            if max_amt <= 0:
+                continue
+
+            amount = random.randint(1, max_amt)
+
+            self._post(
+                "/api/selloffers/",
+                json={
+                    "company": company_id,
+                    "startAmount": amount,
+                    "amount": amount,
+                },
+                name="SELL: create (analyze)",
+            )
+
+
+    """OLD ActiveSeller
+    @task(3)
+    def create_sell_offer(self):
+        #company_id = random.randint(1, 10)
+        company_id = getattr(self, "company_id", 1)
+        #min_price = round(random.uniform(10, 50), 2)
+        amount = random.randint(1, 5)
+
+        self._post(
+            "/api/selloffers/",
+            json={
+                "company": company_id,
+                "startAmount": amount,
+                "amount": amount,
+            },
+            name="SELL: create",
+        )
+
+    @task(1)
+    def list_sell_offers(self):
+        self._get("/api/selloffers/", name="SELL: list")
+    """
+
+class FundsInjectorUser(BaseUser):
+    request_class = "FundsInjector"
+
+    @task(1)
+    def inject_funds(self):
+        self._post(
+            "/api/user/funds/",
+            json={"money": random.randint(500, 2000)},
+            name="USER: funds PUT"
+        )
+
+        
+        
+
+# Wagi klas – 0 = wyłącz
+BaseUser.weight   = 0
+ReadOnlyUser.weight  = 4 if _enable("ReadOnlyUser")  else 0
+ActiveUser.weight   = 2 if _enable("ActiveUser")   else 0
+ActiveUserWithMarketAnalize.weight  = 1 if _enable("ActiveUserWithMarketAnalize")  else 0
+FundsInjectorUser.weight = 1 if _enable("FundsInjectorUser") else 0
+</file>
+
+<file path="stockProject/stockApp/management/commands/bootstrap_market.py">
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+import random
+
+from stockApp.models import Company, StockRate
+
+
+COMPANY_NAMES = [
+    "AlphaTech",
+    "BetaSoft",
+    "GammaIndustries",
+    "DeltaSystems",
+    "EpsilonEnergy",
+    "ZetaLogistics",
+    "EtaFinance",
+    "ThetaHealth",
+    "IotaMotors",
+    "KappaRetail",
+    "LambdaAI",
+    "MuNetworks",
+    "NuCloud",
+    "XiAnalytics",
+    "OmicronLabs",
+    "PiRobotics",
+    "RhoSecurity",
+    "SigmaTrading",
+    "TauBiotech",
+    "UpsilonMedia",
+]
+
+
+class Command(BaseCommand):
+    help = "Bootstrap market with initial companies and stock rates"
+
+    def handle(self, *args, **options):
+        created = 0
+
+        for name in COMPANY_NAMES:
+            company, is_created = Company.objects.get_or_create(name=name)
+
+            if is_created:
+                created += 1
+                self.stdout.write(self.style.SUCCESS(f"Created company: {name}"))
+            else:
+                self.stdout.write(f"Company already exists: {name}")
+
+            # ensure exactly one actual StockRate
+            has_actual = StockRate.objects.filter(company=company, actual=True).exists()
+
+            if not has_actual:
+                rate = round(random.uniform(20.0, 400.0), 2)
+                StockRate.objects.create(
+                    company=company,
+                    rate=rate,
+                    actual=True,
+                    dateInc=timezone.now(),
+                )
+                self.stdout.write(f"  -> created initial rate: {rate}")
+
+        self.stdout.write(self.style.SUCCESS(
+            f"\nBootstrap finished. Companies ensured: {len(COMPANY_NAMES)}, newly created: {created}"
+        ))
+</file>
+
+<file path="stockProject/stockApp/management/commands/clear_test_data.py">
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.conf import settings
+
+from stockApp.models import (
+    Company, Stock, BalanceUpdate, BuyOffer, SellOffer,
+    CustomUser, Transaction, StockRate, Cpu, MarketLog,
+    TradeLog, TrafficLog
+)
+
+class Command(BaseCommand):
+    help = (
+        "Czyści dane środowiska dev/test. "
+        "Domyślnie NIE usuwa logów na innych aliasach DB. "
+        "Użyj --include-logs aby wyczyścić też tabele logowe, "
+        "a --db-alias=<alias> aby wskazać alias (np. test)."
+    )
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="Wymaga do wykonania; zapobiega przypadkowemu uruchomieniu."
+        )
+        parser.add_argument(
+            "--include-logs",
+            action="store_true",
+            help="Czyści również tabele logowe na wskazanym aliasie."
+        )
+        parser.add_argument(
+            "--db-alias",
+            default=None,
+            help="Alias bazy dla logów (np. 'test')."
+        )
+
+    def handle(self, *args, **options):
+        if not options["force"]:
+            raise CommandError("Użyj flagi --force, aby potwierdzić czyszczenie.")
+
+        # Twarde zabezpieczenie środowiska — czyść tylko w DEV/TEST
+        if not settings.DEBUG:
+            raise CommandError("Wyłączone na produkcji (settings.DEBUG=False).")
+
+        db_alias = options.get("db_alias")
+        include_logs = options.get("include_logs", False)
+
+        self.stdout.write(self.style.WARNING("Rozpoczynam czyszczenie danych (dev/test)..."))
+
+        with transaction.atomic():
+            admin_ids = list(CustomUser.objects.filter(is_superuser=True).values_list("id", flat=True))
+
+            BuyOffer.objects.all().delete()
+            SellOffer.objects.all().delete()
+            Stock.objects.all().delete()
+            Company.objects.all().delete()
+            BalanceUpdate.objects.all().delete()
+            Transaction.objects.all().delete()
+            StockRate.objects.all().delete()
+
+            CustomUser.objects.exclude(id__in=admin_ids).delete()
+
+            self.stdout.write(self.style.SUCCESS("Wyczyszczono: oferty, spółki, stany, bilanse, transakcje, kursy, userów (bez adminów)."))
+
+            if include_logs:
+                if not db_alias:
+                    raise CommandError("Podaj --db-alias=<alias> (np. --db-alias=test) razem z --include-logs.")
+                Cpu.objects.using(db_alias).all().delete()
+                MarketLog.objects.using(db_alias).all().delete()
+                TradeLog.objects.using(db_alias).all().delete()
+                TrafficLog.objects.using(db_alias).all().delete()
+                self.stdout.write(self.style.SUCCESS(f"Wyczyszczono logi na aliasie '{db_alias}'."))
+
+        self.stdout.write(self.style.SUCCESS("Zakończone."))
+</file>
+
+<file path="stockProject/stockApp/middleware/LogRequestMiddleware.py">
+import datetime
+import time
+from django.utils.deprecation import MiddlewareMixin
+from django.db import connection
+from stockApp.models import MarketLog
+
+class LogRequestMiddleware(MiddlewareMixin):
+    def process_request(self, request):
+        request.startTime = time.time()
+
+    def process_response(self, request, response):
+        if request.get_full_path() == '/api/deleteDb':
+            return response
+        if hasattr(request, 'startTime') and hasattr(response, 'data'):
+            totalTime = time.time() - request.startTime
+            dbtime = sum(float(query['time']) for query in connection.queries)
+            id = None
+            if isinstance(response.data, list) and 'requestId' in response.data[-1]:
+                id = response.data[-1]["requestId"]
+            if isinstance(response.data, dict) and 'requestId' in response.data:
+                id = response.data['requestId']
+            if id:
+                MarketLog.objects.using('test').create(
+                    apiMethod=request.method,
+                    applicationTime=totalTime,
+                    databaseTime=dbtime,
+                    endpointUrl=request.get_full_path(),
+                    requestId=id,
+                    timestamp = datetime.datetime.now()
+                )
+
+        return response
+</file>
+
+<file path="stockProject/stockApp/middleware/request_logging.py">
+import os, socket
+import json
+import time
+import uuid
+import hashlib
+from pathlib import Path
+from typing import Any, Dict, List, Optional, cast
+
+from django.conf import settings
+from django.db import connection
+from django.utils.deprecation import MiddlewareMixin
+from django.utils.timezone import now
+from django.http import HttpRequest, HttpResponse
+
+from stockApp.models.requestLog import RequestLog
+from stockApp.models.errorLog import ErrorLog  # nasze nowe tabele
+
+
+# --- konfig pomocnicza --------------------------------------------------------
+
+LOG_DIR = Path(getattr(settings, "LOG_DIR", "/logs")).resolve()
+REQUEST_JSONL = LOG_DIR / getattr(settings, "REQUEST_LOG_JSONL", "request_log.jsonl")
+ERROR_JSONL = LOG_DIR / getattr(settings, "ERROR_LOG_JSONL", "error_log.jsonl")
+
+ENV = getattr(settings, "ENV", "dev")
+SERVICE_NAME = getattr(settings, "SERVICE_NAME", "api")
+SERVICE_VERSION = getattr(settings, "SERVICE_VERSION", "0.0.0")
+CONTAINER_ID = (
+    os.getenv("CONTAINER_ID")
+    or os.getenv("HOSTNAME")
+    or socket.gethostname()
+    or "unknown"
+)
+
+# mapowanie ścieżek -> grup akcji (tokeny do modelu)
+def group_endpoint(path: str, method: str) -> str:
+    p = path.lower()
+    if p.startswith("/api/signin") or p.startswith("/api/signup"):
+        return "AUTH"
+    if p.startswith("/api/companies"):
+        return "COMPANY"
+    if p.startswith("/api/buyoffers"):
+        return "BUY"
+    if p.startswith("/api/selloffers"):
+        return "SELL"
+    if p.startswith("/api/user/"):
+        return "USER"
+    return f"{method.upper()}"
+
+def _hash(v: str) -> str:
+    return hashlib.sha256(v.encode("utf-8")).hexdigest()[:16]
+
+def _safe_int(v: Optional[float]) -> Optional[int]:
+    return None if v is None else int(round(v))
+
+
+# --- middleware ----------------------------------------------------------------
+
+class RequestLoggingMiddleware(MiddlewareMixin):
+    """
+    1) Nadaje/odczytuje X-Request-ID.
+    2) Wymusza pomiar czasu zapytań DB w ramach żądania.
+    3) Mierzy total/app/db/response_size.
+    4) Zapisuje rekord do RequestLog (DB) + linię JSONL (gotowe pod trening).
+    5) Przy 4xx/5xx – dopisuje ErrorLog + JSONL.
+    """
+
+    def _classify_status(self, status_code: int) -> str:
+        """
+        Prosta klasyfikacja typu błędu po kodzie HTTP.
+        """
+        if status_code >= 500:
+            return "server_error"
+        if status_code == 400:
+            return "validation_or_bad_request"
+        if status_code in (401, 403):
+            return "auth"
+        if status_code == 404:
+            return "not_found"
+        return "client_error"
+
+    def _extract_error_meta(self, response: HttpResponse, status_code: int) -> tuple[str, str, dict]:
+        """
+        Wyciąga z Response:
+        - message: sensowny string z DRF (ValidationError, non_field_errors, błędy pól)
+        - error_type: np. 'validation', 'auth', 'server_error', ...
+        - extra_ctx: dodatkowy kontekst do ErrorLog (np. fields)
+
+        Minimalne, ale dużo czytelniejsze logi.
+        """
+        msg: str | None = None
+        error_type: str | None = None
+        extra_ctx: dict = {}
+
+        data = getattr(response, "data", None)
+
+        # 1) Jeśli to słownik (typowy DRF)
+        if isinstance(data, dict):
+            # a) typowe pole detail
+            if "detail" in data:
+                msg = str(data["detail"])
+                error_type = "detail"
+            # b) stare API 'error'
+            elif "error" in data:
+                msg = str(data["error"])
+                error_type = "error"
+            else:
+                # c) klasyczne błędy walidacji serializera:
+                #    {'non_field_errors': ['Insufficient funds...'], 'amount': ['Must be > 0.0']}
+                field_msgs = []
+                for field, errors in data.items():
+                    if isinstance(errors, (list, tuple)) and errors:
+                        field_msgs.append(f"{field}: {errors[0]}")
+                    else:
+                        field_msgs.append(f"{field}: {errors}")
+                if field_msgs:
+                    msg = "; ".join(map(str, field_msgs))
+                    error_type = "validation"
+                    extra_ctx["fields"] = list(data.keys())
+
+        # 2) Jeśli lista – np. lista komunikatów
+        elif isinstance(data, list) and data:
+            msg = "; ".join(map(str, data))
+            error_type = "validation"
+
+        # 3) Fallback – nic sensownego nie znaleziono
+        if not msg:
+            msg = f"HTTP {status_code}"
+        if not error_type:
+            error_type = self._classify_status(status_code)
+
+        return msg, error_type, extra_ctx
+
+    def process_request(self, request: HttpRequest) -> None:
+        # 1) Request-ID + Session-ID
+        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        setattr(request, "_request_id", req_id)  # prywatnie na czas żądania
+        setattr(request, "_session_id", request.headers.get("X-Session-ID"))
+
+        # 1a) Scenario ID od Locusta (opcjonalne)
+        scenario_id = request.headers.get("X-Scenario-Id")
+        setattr(request, "_scenario_id", scenario_id)
+
+        # 2) Pomiar czasu
+        setattr(request, "_t_start", time.perf_counter())
+
+        # 3) DB: licznik i wymuszenie mierzenia czasu zapytań
+        setattr(request, "_q_index", len(connection.queries))
+        setattr(request, "_force_debug_cursor_prev", connection.force_debug_cursor)
+        connection.force_debug_cursor = True
+
+    def process_response(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
+        try:
+            # może nie być startu (np. błąd przy middlewarach wcześniej)
+            t_start = getattr(request, "_t_start", None)
+            if t_start is None:
+                return self._return_with_header(request, response)
+
+            # --- czasy
+            t_total = time.perf_counter() - t_start  # sekundy float
+            db_time = self._db_time_for_request(request)
+            db_ms = db_time * 1000.0 if db_time is not None else None
+            total_ms = t_total * 1000.0
+            app_ms = (total_ms - db_ms) if db_ms is not None else total_ms
+            app_ms = max(app_ms, 0.0)
+
+            # --- kontekst
+            user = getattr(request, "user", None)
+            user_id = None
+            user_role = None
+            if getattr(user, "is_authenticated", False):
+                # używamy public_id z CustomUser; jeśli brak – nie wpisujemy
+                user_id = getattr(user, "public_id", None)
+                user_role = getattr(user, "role", None)
+
+            method = request.method.upper() # type: ignore[reportOptionalMemberAccess]
+            path = request.get_full_path()
+
+            # response size (może nie być .content przy streamingu)
+            try:
+                response_size = len(getattr(response, "content", b"") or b"")
+            except Exception:
+                response_size = None
+
+            success = 200 <= getattr(response, "status_code", 500) < 400
+
+            # dane klienta bez PII
+            ua = request.META.get("HTTP_USER_AGENT", "")
+            ip = request.META.get("REMOTE_ADDR", "")
+            ua_hash = _hash(ua) if ua else None
+            ip_hash = _hash(ip) if ip else None
+            
+            user_class = request.headers.get("X-Request-Class")
+            scenario_id = getattr(request, "_scenario_id", None)
+
+            # --- przygotowanie rekordu
+            payload: Dict[str, Any] = {
+                "request_id": getattr(request, "_request_id", None),
+                "session_id": getattr(request, "_session_id", None),
+                "user_id": str(user_id) if user_id else None,
+                "user_role": user_role,
+                "user_class": user_class,
+                "timestamp": now().isoformat(),
+                "api_method": method,
+                "endpoint": path,
+                "endpoint_group": group_endpoint(path, method),
+                "http_status": getattr(response, "status_code", 0),
+                "success": success,
+                "latency_ms_total": round(total_ms, 2),
+                "app_time_ms": round(app_ms, 2),
+                "db_time_ms": round(db_ms, 2) if db_ms is not None else None,
+                "queue_time_ms": None,        # jeśli dodasz X-Queue-Time — wypełnimy
+                "network_time_ms": None,      # opcjonalnie (total - app - db - queue)
+                "response_size": response_size,
+                "user_agent_hash": ua_hash,
+                "client_ip_hash": ip_hash,
+                "service_name": SERVICE_NAME,
+                "env": ENV,
+                "service_version": SERVICE_VERSION,
+                "container_id": CONTAINER_ID,
+                "request_context": {          # surowe parametry przydatne do debug/treningu
+                    "headers_subset": {
+                        "content_type": request.META.get("CONTENT_TYPE"),
+                        "accept": request.META.get("HTTP_ACCEPT"),
+                    },
+                    "query": request.GET.dict() if hasattr(request, "GET") else {},
+                    "scenario_id": scenario_id, 
+                },
+                "error_context": None,        # niżej dla 4xx/5xx
+            }
+
+            # --- 4xx/5xx → błąd
+            if not success:
+                # Wyciągamy sensowny komunikat + typ błędu
+                msg, err_type, extra_ctx = self._extract_error_meta(
+                    response,
+                    payload["http_status"],
+                )
+
+                payload["error_context"] = {
+                    "message": msg,
+                    "error_type": err_type,
+                }
+                
+                payload['success'] = False
+
+                level = "ERROR" if payload["http_status"] >= 500 else "WARN"
+
+                # zapis do ErrorLog (DB)
+                try:
+                    ErrorLog.objects.create(
+                        error_id=str(uuid.uuid4()),
+                        timestamp=payload["timestamp"],
+                        level=level,
+                        component="api",
+                        request_id=payload["request_id"],
+                        parent_request_id=None,
+                        error_code=err_type or str(payload["http_status"]),
+                        message=msg,
+                        stack=None,
+                        context={
+                            "endpoint": path,
+                            "method": method,
+                            "endpoint_group": payload["endpoint_group"],
+                            "user_class": payload.get("user_class"),
+                            **extra_ctx,
+                        },
+                        env=ENV,
+                        service_version=SERVICE_VERSION,
+                        container_id=payload["container_id"],
+                    )
+                except Exception:
+                    # nie blokujemy odpowiedzi; fallback do pliku
+                    pass
+
+                # JSONL – to samo, ale w wersji płaskiej
+                self._append_jsonl(ERROR_JSONL, {
+                    "error_id": str(uuid.uuid4()),
+                    "timestamp": payload["timestamp"],
+                    "level": level,
+                    "component": "api",
+                    "request_id": payload["request_id"],
+                    "error_code": err_type or str(payload["http_status"]),
+                    "message": msg,
+                    "endpoint": path,
+                    "endpoint_group": payload["endpoint_group"],
+                    "user_class": payload.get("user_class"),
+                    "scenario_id": payload.get("scenario_id"),
+                    "env": ENV,
+                    "service_version": SERVICE_VERSION,
+                    "container_id": payload["container_id"],
+                })
+
+            # --- zapis RequestLog (DB)
+            try:
+                RequestLog.objects.create(
+                    request_id=payload["request_id"],
+                    session_id=payload["session_id"],
+                    user_id=payload["user_id"],
+                    user_role=payload["user_role"],
+                    user_class=payload["user_class"],
+                    timestamp=payload["timestamp"],
+                    api_method=payload["api_method"],
+                    endpoint=payload["endpoint"],
+                    endpoint_group=payload["endpoint_group"],
+                    http_status=payload["http_status"],
+                    success=payload["success"],
+                    latency_ms_total=payload["latency_ms_total"],
+                    app_time_ms=payload["app_time_ms"],
+                    db_time_ms=payload["db_time_ms"],
+                    queue_time_ms=payload["queue_time_ms"],
+                    network_time_ms=payload["network_time_ms"],
+                    response_size=payload["response_size"],
+                    user_agent_hash=payload["user_agent_hash"],
+                    client_ip_hash=payload["client_ip_hash"],
+                    service_name=payload["service_name"],
+                    container_id=payload["container_id"],
+                    env=payload["env"],
+                    service_version=payload["service_version"],
+                    request_context=payload["request_context"],
+                    error_context=payload["error_context"],
+                )
+            except Exception:
+                # nie zabijamy requestu jeśli DB padnie – mamy JSONL jako źródło prawdy
+                pass
+
+            # --- zapis JSONL (źródło do trenowania)
+            self._append_jsonl(REQUEST_JSONL, payload)
+
+        finally:
+            # przywróć ustawienie cursora
+            try:
+                prev = getattr(request, "_force_debug_cursor_prev", None)
+                if prev is not None:
+                    connection.force_debug_cursor = prev
+            except Exception:
+                pass
+
+        return self._return_with_header(request, response)
+    
+    def process_exception(self, request, exc):
+        # minimalny zapis nieobsłużonego wyjątku (500)
+        ts = now().isoformat()
+        req_id = getattr(request, "_request_id", str(uuid.uuid4()))
+        try:
+            ErrorLog.objects.create(
+                error_id=str(uuid.uuid4()),
+                timestamp=ts,
+                level="ERROR",
+                component="api",
+                request_id=req_id,
+                parent_request_id=None,
+                error_code="500",
+                message=str(exc),
+                stack={"type": type(exc).__name__},
+                context={"path": request.get_full_path(), "method": request.method},
+                env=ENV,
+                service_version=SERVICE_VERSION,
+                container_id=None,
+            )
+        finally:
+            # zwróć None -> Django pójdzie dalej standardową ścieżką obsługi wyjątku (500)
+            return None
+
+    # --- helpers ----------------------------------------------------------------
+
+    def _db_time_for_request(self, request: HttpRequest) -> Optional[float]:
+        """
+        Suma czasu zapytań DB tylko z tego requestu.
+        Wspieramy force_debug_cursor, więc działa również gdy DEBUG=False.
+        """
+        try:
+            q_from = getattr(request, "_q_index", 0)
+            q: List[Dict[str, Any]] = connection.queries[q_from:]  # type: ignore[index]
+            total = 0.0
+            for qi in q:
+                # Django zapisuje czas jako string
+                try:
+                    total += float(qi.get("time", 0))
+                except Exception:
+                    pass
+            return total
+        except Exception:
+            return None
+
+    def _append_jsonl(self, path: Path, obj: Dict[str, Any]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        except Exception:
+            # ostateczny fallback – nic nie robimy, nie blokujemy requestu
+            pass
+
+    def _return_with_header(self, request, response):
+        try:
+            response["X-Request-ID"] = getattr(request, "_request_id", "")
+        except Exception:
+            pass
+        return response
+</file>
+
+<file path="stockProject/stockApp/models/balanceUpdate.py">
+from django.db import models
+from .user import CustomUser
+
+class BalanceUpdate(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='balance_updates')
+    changeAmount = models.FloatField()
+    
+    # [WHY] spójne nazwy wartości, bez literówek (logi/JSONL będą miały stały enum)
+    CHANGE_CHOICES = (
+        ('money', 'money'),
+        ('moneyAfterTransactions', 'moneyAfterTransactions'),
+    )
+    changeType = models.CharField(max_length=40, choices=CHANGE_CHOICES, db_index=True)
+    
+    createdAt = models.DateTimeField(auto_now_add=True)
+
+    # [WHY] zamiast "actual" (niejednoznaczne) dodajemy flagę zastosowania pozycji księgi:
+    # processBalanceUpdates ustawi applied=True + appliedAt, nic nie kasujemy → pełny audyt do AI
+    applied = models.BooleanField(default=False, db_index=True)  # [WHY] index - szybkie filtrowanie batcha
+    appliedAt = models.DateTimeField(null=True, blank=True)
+    
+    # [WHY] korelacja z żądaniem/API/scenariuszem testowym (opcjonalne pola)
+    request_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    session_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['user', 'applied', 'changeType']),
+            models.Index(fields=['createdAt']),
+        ]
+</file>
+
+<file path="stockProject/stockApp/models/buyOffer.py">
+from django.db import models
+from .user import CustomUser
+from .company import Company
+from django.utils import timezone
+
+
+class BuyOffer(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='buy_offers')
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='buy_offers')
+    maxPrice = models.FloatField(default=0.0)
+    startAmount = models.IntegerField(default=1)
+    amount = models.IntegerField()
+    
+    # [WHY] dodany indeks db - przyspieszane expireOffers
+    dateLimit = models.DateTimeField(db_index=True)
+    actual = models.BooleanField(default=True)
+    
+    # --- NOWE POD LOGI I STABILNOŚĆ ---
+    # [WHY] semantyka oferty (czytelniejsze od boola)
+    STATUS_CHOICES = (
+        ('active', 'ACTIVE'),
+        ('matched', 'MATCHED'),
+        ('expired', 'EXPIRED'),
+        ('cancelled', 'CANCELLED'),
+    )
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='active', db_index=True)
+    
+    # [WHY] korelacja HTTP → JSONL - opcjonalne, żeby nie ruszać obecnych wywołań
+    request_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    session_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    
+    # [WHY] analizy czasowe / porządki w logach
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at = models.DateTimeField(default=timezone.now)#auto_now=True)
+    
+    class Meta:
+        constraints = [
+            # [WHY] obie ilości nie mogą zejść poniżej 0 (ochrona przy matcherze)
+            models.CheckConstraint(check=models.Q(amount__gte=0), name='buyoffer_amount_nonneg'),
+            models.CheckConstraint(check=models.Q(startAmount__gte=0), name='buyoffer_start_amount_nonneg'),
+        ]
+        indexes = [
+            # [WHY] matcher bierze najlepsze ceny w ramach spółki - to przyspiesza:
+            models.Index(fields=['company', 'status', 'maxPrice']),
+            models.Index(fields=['company', 'actual', 'maxPrice']),
+            # [WHY] szybkie wyszukanie ofert użytkownika
+            models.Index(fields=['user', 'status']),
+        ]
+
+    def __str__(self):
+        return f"BUY #{self.pk} u={self.user} c={self.company} amt={self.amount} max={self.maxPrice} [{self.status}]"
+</file>
+
+<file path="stockProject/stockApp/models/company.py">
+from django.db import models
+
+
+class Company(models.Model):
+    name = models.CharField(max_length=150, unique=True, db_index=True)
+    slug = models.SlugField(max_length=160, unique=True, null=True, blank=True)
+    
+    def __str__(self):
+        return self.name
+</file>
+
+<file path="stockProject/stockApp/models/cpu.py">
+from django.db import models
+
+class Cpu(models.Model):
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    cpuUsage = models.FloatField()
+    memoryUsage = models.FloatField()
+
+    # Stare pole zostaje dla kompatybilności - trzeba sprawdzić czy jest gdzieś używane najpierw
+    # contenerId = models.CharField(max_length=64, null=True, blank=True)
+
+    # Nowe, poprawne pole z indeksami
+    containerId = models.CharField(max_length=64, db_index=True)
+
+    service = models.CharField(max_length=64, null=True, blank=True, db_index=True)   # np. web/celery
+    env = models.CharField(max_length=32, null=True, blank=True, db_index=True)       # dev/test/prod
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['containerId', 'timestamp']),
+            models.Index(fields=['service', 'timestamp']),
+        ]
+
+    def __str__(self):
+        return f"{self.timestamp} {self.service or ''} {self.containerId}"
+</file>
+
+<file path="stockProject/stockApp/models/errorLog.py">
+# Spójny kanał błędów/wyjątków: aplikacja, Celery, integracje.
+# 1 rekord = 1 zdarzenie (łatwy export do JSONL).
+from django.db import models
+import uuid
+
+def gen_uuid_str():
+    return str(uuid.uuid4())
+
+class ErrorLog(models.Model):
+    class Level(models.TextChoices):
+        ERROR = 'ERROR', 'ERROR'
+        WARN  = 'WARN',  'WARN'
+
+    # Identyfikatory
+    error_id = models.CharField(
+        max_length=64,
+        default=gen_uuid_str,
+        unique=True,
+        db_index=True,
+        help_text="Unikalny identyfikator zdarzenia (UUID)."
+    )
+    timestamp = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+        help_text="Czas wystąpienia błędu (UTC)."
+    )
+
+    # Klasyfikacja
+    level = models.CharField(
+        max_length=10,
+        choices=Level.choices,
+        default=Level.ERROR,
+        db_index=True,
+        help_text="Poziom błędu (ERROR/WARN)."
+    )
+    component = models.CharField(
+        max_length=64,
+        db_index=True,
+        help_text="Moduł/serwis (np. api/matcher/db/queue)."
+    )
+
+    # Korelacja z przepływem
+    request_id = models.CharField(
+        max_length=64,
+        null=True, blank=True,
+        db_index=True,
+        help_text="Jeśli błąd dotyczy konkretnego żądania HTTP."
+    )
+    parent_request_id = models.CharField(
+        max_length=64,
+        null=True, blank=True,
+        db_index=True,
+        help_text="Jeśli błąd dot. transakcji powiązanej z żądaniem."
+    )
+
+    # Treść błędu
+    error_code = models.CharField(
+        max_length=64,
+        null=True, blank=True,
+        db_index=True,
+        help_text="Skrócony kod (np. DB.TIMEOUT, VALIDATION)."
+    )
+    message = models.CharField(
+        max_length=2048,
+        help_text="Krótki opis błędu (1-2 zdania)."
+    )
+    # Uwaga: w JSONL new-line zostanie zapisany jako \n (OK)
+    stack = models.TextField(
+        null=True, blank=True,
+        help_text="Opcjonalny stacktrace (tekst)."
+    )
+    context = models.JSONField(
+        null=True, blank=True,
+        help_text="Dodatkowy kontekst (np. parametry wejściowe)."
+    )
+
+    # Kontekst środowiska
+    service_name = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True,
+        help_text="Nazwa usługi (np. web/celery-worker)."
+    )
+    container_id = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True,
+        help_text="Identyfikator kontenera przetwarzającego."
+    )
+    env = models.CharField(
+        max_length=32, null=True, blank=True, db_index=True,
+        help_text="Środowisko (dev/test/prod)."
+    )
+    service_version = models.CharField(
+        max_length=64, null=True, blank=True, db_index=True,
+        help_text="Wersja serwisu (tag/commit)."
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['timestamp']),
+            models.Index(fields=['level', 'timestamp']),
+            models.Index(fields=['component', 'timestamp']),
+            models.Index(fields=['request_id', 'timestamp']),
+            models.Index(fields=['service_name', 'env', 'timestamp']),
+        ]
+        verbose_name = "Error Log"
+        verbose_name_plural = "Error Logs"
+
+    def __str__(self):
+        return f"{self.timestamp} {self.level} {self.component}: {self.error_code or ''} {self.message[:60]}"
+</file>
+
+<file path="stockProject/stockApp/models/requestLog.py">
+from django.db import models
+from django.contrib.postgres.fields import JSONField
+
+
+# [WHY] RequestLog zastąpi całkowicie marketLog oraz trafficLog w jedną spójną tabelę z kompleksowymi danymi, będzie to łatwiejsze do logowania i dane będą lepsze dla modelu (bardziej złożone i dokładne)
+
+class RequestLog(models.Model):
+    request_id = models.CharField(max_length=64, db_index=True)
+    session_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    
+    # Kontekst użytkownika (bez PII)
+    user_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)   # np. CustomUser.public_id
+    user_role = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    user_class = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # Czas i podstawy HTTP
+    timestamp = models.DateTimeField(db_index=True)                 # czas przyjęcia żądania (UTC)
+    api_method = models.CharField(max_length=8, db_index=True)      # GET/POST/...
+    endpoint = models.CharField(max_length=2048)                    # pełna ścieżka
+    endpoint_group = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    
+    # Wynik HTTP
+    http_status = models.IntegerField()
+    success = models.BooleanField(default=False)
+
+    # Czasy (ms)
+    latency_ms_total = models.FloatField()
+    app_time_ms = models.FloatField(null=True, blank=True)
+    db_time_ms = models.FloatField(null=True, blank=True)
+    queue_time_ms = models.FloatField(null=True, blank=True)
+    network_time_ms = models.FloatField(null=True, blank=True)
+
+    # Dodatkowy kontekst żądania
+    response_size = models.IntegerField(null=True, blank=True)
+    user_agent_hash = models.CharField(max_length=64, null=True, blank=True)
+    client_ip_hash = models.CharField(max_length=64, null=True, blank=True)
+    
+    # Kontekst środowiska
+    service_name = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    container_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    service_version = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # Surowe konteksty
+    request_context = models.JSONField(null=True, blank=True)       # np. nagłówki, payload_size itp.
+    error_context = models.JSONField(null=True, blank=True)         # komunikat/stack przy błędzie
+    
+    env = models.CharField(max_length=32, null=True, blank=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['timestamp']),
+            models.Index(fields=['request_id', 'timestamp']),
+            models.Index(fields=['user_id', 'session_id', 'timestamp']),
+            models.Index(fields=['endpoint_group', 'timestamp']),
+            models.Index(fields=['service_name', 'env', 'timestamp']),
+        ]
+        verbose_name = "Request Log"
+        verbose_name_plural = "Request Logs"
+
+    def __str__(self):
+        return f"{self.timestamp} {self.api_method} {self.endpoint} [{self.http_status}]"
+</file>
+
+<file path="stockProject/stockApp/models/sellOffer.py">
+from django.db import models
+from .user import CustomUser
+from .stock import Stock
+from .company import Company
+from django.utils import timezone
+
+
+class SellOffer(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='sell_offers')
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='sell_offers')
+    stock = models.ForeignKey(Stock, on_delete=models.CASCADE, related_name='sell_offers')
+    
+    minPrice = models.FloatField(default=0.0)
+    startAmount = models.IntegerField(default=1)
+    amount = models.IntegerField()
+    
+    dateLimit = models.DateTimeField(db_index=True)
+    actual = models.BooleanField(default=True)
+    
+    
+    # Status oferty modeluje pełny cykl życia (ACTIVE/MATCHED/EXPIRED/CANCELLED), co jednoznacznie rozróżnia intencję od rezultatu.
+    # Dzięki temu w analizie/uczeniu model może łączyć wzorce zachowań (np. sekwencje zdarzeń i metryki) z konkretnymi wynikami rynkowymi oferty.
+    STATUS_CHOICES = (
+        ('active', 'ACTIVE'),
+        ('matched', 'MATCHED'),
+        ('expired', 'EXPIRED'),
+        ('cancelled', 'CANCELLED'),
+    )
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='active', db_index=True)
+
+    # [WHY] korelacja pod logi/JSONL - to samo co buyOffer
+    request_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    session_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # [WHY] analizy czasowe
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at = models.DateTimeField(default=timezone.now)#auto_now=True)
+    
+    class Meta:
+        constraints = [
+            models.CheckConstraint(check=models.Q(amount__gte=0), name='selloffer_amount_nonneg'),
+            models.CheckConstraint(check=models.Q(startAmount__gte=0), name='selloffer_start_amount_nonneg'),
+        ]
+        indexes = [
+            # [WHY] matcher szuka najniższych cen sprzedaży w spółce
+            models.Index(fields=['company', 'status', 'minPrice']),
+            models.Index(fields=['company', 'actual', 'minPrice']),
+            models.Index(fields=['user', 'status']),
+        ]
+
+    def __str__(self):
+        return f"SELL #{self.pk} u={self.user} c={self.company} amt={self.amount} min={self.minPrice} [{self.status}]"
+</file>
+
+<file path="stockProject/stockApp/models/stock.py">
+from django.db import models
+from .company import Company
+from .user import CustomUser
+from django.utils import timezone
+
+
+class Stock(models.Model):
+    amount = models.IntegerField(default=0)
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='stocks')
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='stocks')
+    
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at =  models.DateTimeField(default=timezone.now)#auto_now=True)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user', 'company'], name='uniq_user_company_stock'),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'company'])
+        ]
+        
+    def __str__(self):
+        return f"{self.user.username} - {self.company.name}: {self.amount}"
+</file>
+
+<file path="stockProject/stockApp/models/stockRate.py">
+from django.db import models
+from .company import Company
+from django.db.models import Q
+
+
+class StockRate(models.Model):
+    actual = models.BooleanField(default=True)
+    rate = models.FloatField(default=0.0)
+    
+    # [WHY] dodałem indeks db - szybkie sortowanie po najświeższych kursach
+    dateInc = models.DateTimeField(db_index = True)
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='rates')
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company'], condition=Q(actual=True),
+                name='uniq_stockrate_actual_per_company'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'dateInc']),
+            models.Index(fields=['company', 'actual']),
+        ]
+        
+    def __str__(self):
+        return f"{self.company} @ {self.rate} ({'actual' if self.actual else 'hist'})"
+</file>
+
+<file path="stockProject/stockApp/models/tradeLog.py">
+from django.db import models
+
+class TradeLog(models.Model):
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    applicationTime = models.FloatField()
+    databaseTime = models.FloatField()
+    numberOfSellOffers = models.IntegerField()
+    numberOfBuyOffers = models.IntegerField()
+    companyIds = models.JSONField()
+    
+    # --- NOWE POD ANALIZĘ/AI ---
+    # [WHY] korelacja zadania Celery i żądania, które uruchomiło przepływ (opcjonalne) - najwyżej usuniemy
+    task_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    parent_request_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # [WHY] jakościowe metryki cyklu (świetne dla klasyfikacji/sekwencji)
+    matchedPairs = models.IntegerField(default=0)
+    partialFills = models.IntegerField(default=0)
+    rejectedOffers = models.IntegerField(default=0)
+
+    # [WHY] szybkie feature’y czasowe
+    queueTimeMs = models.FloatField(default=0.0)
+    cycleTimeMs = models.FloatField(default=0.0)
+
+    # [WHY] miejsce na agregaty per spółka/histogramy, bez migracji schematu przy zmianach
+    details = models.JSONField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['timestamp']),
+            models.Index(fields=['task_id']),
+            models.Index(fields=['parent_request_id']),
+        ]
+</file>
+
+<file path="stockProject/stockApp/models/transaction.py">
+from django.db import models
+from .sellOffer import SellOffer
+from .buyOffer import BuyOffer
+
+class Transaction(models.Model):
+    buyOffer = models.ForeignKey(BuyOffer, on_delete=models.CASCADE, related_name='transactions')
+    sellOffer = models.ForeignKey(SellOffer, on_delete=models.CASCADE, related_name='transactions')
+
+    amount = models.IntegerField()
+    price = models.FloatField()
+    totalPrice = models.FloatField()
+    transacionDate = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # --- NOWE POD LOGI/AI ---
+    # [WHY] korelacja HTTP ↔ Celery ↔ DB; opcjonalne (nie łamią istniejących wywołań)
+    request_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    task_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+
+    # [WHY] szybki dostęp bez joinów (opcjonalna denormalizacja)
+    buyer_id_cache = models.IntegerField(null=True, blank=True, db_index=True)
+    seller_id_cache = models.IntegerField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            # [WHY] prosta walidacja spójności biznesowej; jeśli za wcześnie na Decimal, walidujemy przybliżeniem:
+            models.CheckConstraint(
+                check=models.Q(totalPrice__gte=0),  # minimalna ochrona, resztę zrobimy w serializerze/tasku
+                name='txn_totalprice_nonneg'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['transacionDate']),
+            models.Index(fields=['request_id']),
+            models.Index(fields=['task_id']),
+        ]
+
+    def __str__(self):
+        return f"TXN #{self.pk} buy={self.buyOffer} sell={self.sellOffer} amt={self.amount} price={self.price}"
+</file>
+
+<file path="stockProject/stockApp/models/user.py">
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+import uuid
+from django.utils import timezone
+
+
+class CustomUser(AbstractUser):
+    public_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True, editable=False)
+    
+    name = models.CharField(max_length=150)
+    surname = models.CharField(max_length=150)
+    
+    money = models.FloatField(default=0.0)
+    moneyAfterTransactions = models.FloatField(default=0.0)
+    
+    role = models.CharField(max_length=150)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)#auto_now_add=True)
+    updated_at = models.DateTimeField(default=timezone.now)#auto_now=True)
+
+    def __str__(self):
+        return f"{self.username} ({self.name} {self.surname})"
+
+    @property
+    def money_after_transactions(self) -> float:
+        return self.moneyAfterTransactions
+</file>
+
+<file path="stockProject/stockApp/serializers/buyOfferSerializer.py">
+import random
+from django.utils import timezone
+from rest_framework import serializers
+from ..models import BuyOffer, StockRate, BalanceUpdate
+from .helpers import _get_request_id, _get_session_id
+
+class BuyOfferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BuyOffer
+        fields = ['id', 'company', 'startAmount', 'amount', 'maxPrice', 'dateLimit', 'status']  # na zewnątrz trzymamy minimalny interfejs
+        read_only_fields = ['id', 'maxPrice', 'dateLimit', 'status']
+
+    def validate(self, attrs):
+        if attrs.get('amount', 0) <= 0:
+            raise serializers.ValidationError("Amount must be > 0.")
+        if attrs.get('startAmount', 0) <= 0:
+            raise serializers.ValidationError("startAmount must be > 0.")
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        user = request.user
+        amount = validated_data['amount']
+        company = validated_data['company']
+
+        # najnowszy "actual" kurs
+        try:
+            latest = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
+            current_rate = latest.rate
+        except StockRate.DoesNotExist:
+            raise serializers.ValidationError("No stock rate available for the selected company.")
+
+        # widełki ceny (buy): 0.95 .. 1.10 * last
+        min_price = 0.95 * current_rate
+        max_price = 1.10 * current_rate
+        calculated_price = round(random.uniform(min_price, max_price), 2)
+
+        total_cost = calculated_price * amount
+        # pole zgodne z MODELEM: moneyAfterTransactions
+        if user.moneyAfterTransactions < total_cost:
+            raise serializers.ValidationError("Insufficient funds to cover this transaction.")
+
+        # rezerwacja środków (księga zdarzeń)
+        BalanceUpdate.objects.create(
+            user=user,
+            changeAmount=-total_cost,
+            changeType='moneyAfterTransactions',
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
+        )
+
+        date_limit = timezone.now() + timezone.timedelta(minutes=3)
+
+        buy = BuyOffer.objects.create(
+            user=user,
+            company=company,
+            startAmount=validated_data['startAmount'],
+            amount=amount,
+            maxPrice=calculated_price,
+            dateLimit=date_limit,
+            actual=True,                   # dla kompatybilności
+            status='active',               # nowa semantyka
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
+        )
+        return buy
+</file>
+
+<file path="stockProject/stockApp/serializers/companySerializer.py">
+from rest_framework import serializers
+from stockApp.models import Company
+from django.utils.text import slugify
+
+class CompanySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Company
+        fields = ['id', 'name', 'slug']
+
+    def create(self, validated_data):
+        name = validated_data['name']
+        slug = validated_data.get('slug') or slugify(name)
+        company = Company.objects.create(name=name, slug=slug)
+        return company
+</file>
+
+<file path="stockProject/stockApp/serializers/helpers.py">
+def _get_request_id(request):
+    return (request.META.get('HTTP_X_REQUEST_ID') or
+            request.headers.get('X-Request-ID') or None)
+
+def _get_session_id(request):
+    return (request.META.get('HTTP_X_SESSION_ID') or
+            request.headers.get('X-Session-ID') or None)
+</file>
+
+<file path="stockProject/stockApp/serializers/sellOfferSerializer.py">
+from django.utils import timezone
+from rest_framework import serializers
+from rest_framework import serializers
+from stockApp.models import SellOffer, Stock, StockRate
+import random
+from .helpers import _get_request_id, _get_session_id
+
+class SellOfferSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SellOffer
+        fields = ['id', 'company', 'startAmount', 'amount', 'minPrice', 'dateLimit', 'status']
+        read_only_fields = ['id', 'minPrice', 'dateLimit', 'status']
+
+    def validate(self, attrs):
+        if attrs.get('amount', 0) <= 0:
+            raise serializers.ValidationError("Amount must be > 0.")
+        if attrs.get('startAmount', 0) <= 0:
+            raise serializers.ValidationError("startAmount must be > 0.")
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get('request')
+        user = request.user
+        company = validated_data['company']
+        amount = validated_data['amount']
+
+        try:
+            latest = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
+            current_rate = latest.rate
+        except StockRate.DoesNotExist:
+            raise serializers.ValidationError("No stock rate available for the selected company.")
+
+        try:
+            stock = Stock.objects.get(user=user, company=company)
+        except Stock.DoesNotExist:
+            raise serializers.ValidationError("You do not own shares of this company.")
+
+        if stock.amount < amount:
+            raise serializers.ValidationError("You do not have enough shares.")
+
+        # widełki ceny (sell): 0.90 .. 1.05 * last
+        min_price = 0.90 * current_rate
+        max_price = 1.05 * current_rate
+        calculated_price = round(random.uniform(min_price, max_price), 2)
+
+        date_limit = timezone.now() + timezone.timedelta(minutes=3)
+
+        sell = SellOffer.objects.create(
+            user=user,
+            company=company,
+            stock=stock,
+            startAmount=validated_data['startAmount'],
+            amount=amount,
+            minPrice=calculated_price,
+            dateLimit=date_limit,
+            actual=True,
+            status='active',
+            request_id=_get_request_id(request),
+            session_id=_get_session_id(request),
+        )
+
+        # blokujemy posiadane akcje pod ofertę
+        stock.amount -= amount
+        stock.save(update_fields=['amount'])
+
+        return sell
+</file>
+
+<file path="stockProject/stockApp/serializers/stockRateSerializer.py">
+from rest_framework import serializers
+from stockApp.models import StockRate
+
+class StockRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StockRate
+        fields = '__all__'
+</file>
+
+<file path="stockProject/stockApp/serializers/stockSerializer.py">
+from rest_framework import serializers
+from stockApp.models import Stock
+
+class StockSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Stock
+        fields = '__all__'
+</file>
+
+<file path="stockProject/stockApp/serializers/updateUserSerializer.py">
+from rest_framework import serializers
+from stockApp.models import CustomUser
+
+class UserUpdateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['name', 'surname', 'money', 'moneyAfterTransactions', 'role']
+
+    def update(self, instance, validated_data):
+        for field in ['name', 'surname', 'role']:
+            if field in validated_data:
+                setattr(instance, field, validated_data[field])
+
+        if 'money' in validated_data:
+            instance.money = validated_data['money']
+
+        if 'moneyAfterTransactions' in validated_data:
+            instance.moneyAfterTransactions = validated_data['moneyAfterTransactions']
+
+        instance.save()
+        return instance
+</file>
+
+<file path="stockProject/stockApp/serializers/userInfoSerializer.py">
+from rest_framework import serializers
+from stockApp.models import CustomUser
+
+class CustomUserInfoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        # bez hasła w "info"; dodajemy public_id pod korelację w logach
+        fields = ('public_id', 'username', 'name', 'surname', 'email',
+                  'money', 'moneyAfterTransactions', 'role')
+</file>
+
+<file path="stockProject/stockApp/serializers/userSerializer.py">
+from rest_framework import serializers
+from stockApp.models import CustomUser
+import random
+
+class CustomUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ('username', 'password', 'name', 'surname', 'email')
+        extra_kwargs = {'password': {'write_only': True}}
+
+    def create(self, validated_data):
+        start_money = float(random.randint(2000, 10000))
+        user = CustomUser(
+            username=validated_data['username'],
+            name=validated_data['name'],
+            surname=validated_data['surname'],
+            money=start_money,
+            moneyAfterTransactions=start_money,
+            role='ROLE_USER',
+            email=validated_data['email'],
+        )
+        user.set_password(validated_data['password'])
+        user.save()
+        return user
+</file>
+
+<file path="stockProject/stockApp/views/auth.py">
+from django.contrib.auth import authenticate
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.authtoken.models import Token
+
+from stockApp.models import CustomUser
+from stockApp.serializers import CustomUserSerializer
+from stockApp.views.mixins import RequestContextMixin
+
+
+class SignUpView(RequestContextMixin, APIView):
+    """
+    POST /api/signUp
+    Tworzy nowego użytkownika.
+    Zwraca: {"message": "User created successfully."} przy 201
+    (Bez requestId w body - X-Request-ID dołoży middleware w nagłówku.)
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        serializer = CustomUserSerializer(data=request.data, context=self.get_serializer_context())
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        username = serializer.validated_data.get("username")    # type: ignore[reportOptionalMemberAccess]
+        email = serializer.validated_data.get("email")          # type: ignore[reportOptionalMemberAccess]
+        if CustomUser.objects.filter(username=username).exists():
+            return Response({"error": "User with this username already exists."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if email and CustomUser.objects.filter(email=email).exists():
+            return Response({"error": "User with this email already exists."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save()
+        return Response({"message": "User created successfully."}, status=status.HTTP_201_CREATED)
+
+
+class SignInView(RequestContextMixin, APIView):
+    """
+    POST /api/signIn
+    Autoryzuje użytkownika i zwraca token.
+    Zwraca: {"token": "<token>"} przy 200 albo {"error": "..."} przy 400.
+    (Bez requestId w body - X-Request-ID dołoży middleware w nagłówku.)
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        username = request.data.get("username")
+        password = request.data.get("password")
+        if not username or not password:
+            return Response({"detail": "Username and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = authenticate(username=username, password=password)
+        if user is None:
+            return Response({"detail": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        token, _ = Token.objects.get_or_create(user=user)
+        return Response({"token": token.key}, status=status.HTTP_200_OK)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+OLD
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from stockApp.models import CustomUser
+from stockApp.serializers import CustomUserSerializer
+from rest_framework.authtoken.models import Token
+from rest_framework import status
+from rest_framework.permissions import AllowAny
+from django.contrib.auth import authenticate
+import uuid
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def signUp(request):
+    serializer = CustomUserSerializer(data=request.data)
+    if serializer.is_valid():
+        username = serializer.validated_data.get('username')
+        email = serializer.validated_data.get('email')
+        if CustomUser.objects.filter(username=username).exists():
+            return Response({'error': 'User with this username already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        if CustomUser.objects.filter(email=email).exists():
+            return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        requestId = str(uuid.uuid4())
+        return Response({'message': 'User created successfully.','requestId':requestId}, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def signIn(request):
+    username = request.data['username']
+    password = request.data['password']
+    if username is None or password is None:
+        return Response({'error': 'Please provide both username and password'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = authenticate(username=username, password=password)
+    
+    if user is not None:
+        token, created = Token.objects.get_or_create(user=user)
+        requestId = str(uuid.uuid4())
+        return Response({'token': token.key, 'requestId':requestId}, status=status.HTTP_200_OK)
+    else:
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_400_BAD_REQUEST)"""
+</file>
+
+<file path="stockProject/stockApp/views/companies.py">
+import random
+from django.utils import timezone
+from rest_framework import status, viewsets
+from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from stockApp.models import Company, Stock, StockRate
+from stockApp.serializers import CompanySerializer, StockRateSerializer
+from stockApp.views.mixins import RequestContextMixin, LatestRateMixin
+
+
+class CompanyViewSet(RequestContextMixin, viewsets.ViewSet):
+    """
+    /api/companies [GET, POST]
+    - GET  : lista spółek
+    - POST : tworzy spółkę + startowy kurs (actual=True) i startowy stan akcji dla request.user
+    Uwaga: brak requestId w body — X-Request-ID doda middleware.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def list(self, request):
+        qs = Company.objects.all()
+        data = CompanySerializer(qs, many=True, context=self.get_serializer_context()).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    def create(self, request):
+        serializer = CompanySerializer(data=request.data, context=self.get_serializer_context())
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        name = serializer.validated_data.get("name")                            # type: ignore[reportOptionalMemberAccess]
+        if Company.objects.filter(name=name).exists():
+            return Response({"detail": "Company with this name already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        company = serializer.save()
+
+        # --- Startowy kurs (actual=True, TZ-aware) ---
+        initial_rate = round(random.uniform(5.0, 100.0), 2)
+        rate_payload = {
+            "actual": True,
+            "rate": initial_rate,
+            "dateInc": timezone.now(),
+            "company": company.pk,           # type: ignore[reportOptionalMemberAccess]
+        }
+        rate_ser = StockRateSerializer(data=rate_payload)
+        if not rate_ser.is_valid():
+            # cofamy spółkę, by nie zostawiać sieroty (prosto, bez transakcji globalnej)
+            company.delete()                # type: ignore[reportOptionalMemberAccess]
+            return Response(rate_ser.errors, status=status.HTTP_400_BAD_REQUEST)
+        rate_ser.save()
+
+        # 3) startowy stan akcji dla właściciela (jak w starym kodzie)
+       # Stock.objects.create(amount=10000, user=request.user, company=company)
+
+        return Response({"message": "Company created successfully."}, status=status.HTTP_201_CREATED)
+
+
+class CompanyRatesView(RequestContextMixin, APIView):
+    """
+    GET /api/companies/rates?n=<int>
+    Zwraca ostatnie 'n' kursów dla każdej spółki (flat lista, jak w starym API – tylko bez requestId w body).
+    - Parametr 'n' w query params; domyślnie 1.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        try:
+            n = int(request.query_params.get("n", 1))
+        except ValueError:
+            return Response({"detail": "Parameter 'n' must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if n <= 0:
+            return Response({"detail": "Parameter 'n' must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+
+        companies = Company.objects.all()
+        rates = []
+        for company in companies:
+            qs = StockRate.objects.filter(company=company).order_by("-dateInc")[:n]
+            rates.extend(qs)
+
+        data = StockRateSerializer(rates, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
+
+
+
+
+"""
+OLD
+ 
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from stockApp.models import Company, Stock, StockRate
+from rest_framework import status
+import random
+from datetime import datetime
+import uuid
+from stockApp.serializers import CompanySerializer, StockRateSerializer
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def companies(request):
+    companies = Company.objects.all()
+    serializer = CompanySerializer(companies, many=True)
+    data = serializer.data
+    responseData = list(data)
+    responseData.append({'requestId': str(uuid.uuid4())})
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def getCompaniesStockRates(request):
+    numberOfRates = request.data['numberOfRates']
+    companies = Company.objects.all()
+    stockRates = []
+    for company in companies:
+        companyStockRates = StockRate.objects.filter(company=company).order_by('-dateInc')[:numberOfRates]
+        stockRates.extend(companyStockRates)
+    serializer = StockRateSerializer(stockRates, many=True)
+    data = serializer.data
+    responseData = list(data)
+    responseData.append({'requestId': str(uuid.uuid4())})
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def createCompany(request):
+    serializer = CompanySerializer(data=request.data)
+    if serializer.is_valid():
+        name = serializer.validated_data.get('name')
+        if Company.objects.filter(name=name).exists():
+            return Response({'error': 'Company with this name already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        company = serializer.save()
+        stockRateData = {
+            'actual': True,
+            'rate': random.uniform(5.0, 100.0),
+            'dateInc': datetime.now(),
+            'company': company.pk  # lub company.pk
+        }
+        stockRateSerializer = StockRateSerializer(data=stockRateData)
+        if stockRateSerializer.is_valid():
+            stockRateSerializer.save()
+            Stock.objects.create(amount=10000, user = request.user, company=company)
+            requestId = str(uuid.uuid4())
+            return Response({'message': 'Company created successfully.', 'requestId':requestId}, status=status.HTTP_201_CREATED)
+        else:
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+"""
+</file>
+
+<file path="stockProject/stockApp/views/mixins.py">
+# Mixins pomocnicze dla CBV:
+# - RequestContextMixin: wyciąga request_id/session_id z nagłówków + wstrzykuje request do serializerów.
+# - LatestRateMixin: bezpiecznie pobiera najnowszy kurs (StockRate.actual=True) dla spółki.
+# - OfferLifecycleMixin: ujednolica anulowanie ofert (status/actual) oraz zwroty rezerw/akcji przez BalanceUpdate.
+#
+# UWAGA: middleware i tak loguje RequestLog/JSONL; te mixins nie "logują", tylko dbają o spójność domeny.
+
+from typing import Optional, Dict, Any
+from django.db import transaction
+from django.utils import timezone
+from rest_framework import serializers, status
+from rest_framework.response import Response
+from stockApp.models import StockRate, Stock, BalanceUpdate, BuyOffer, SellOffer
+
+
+
+class RequestContextMixin:
+    """
+    Zapewnia:
+        - self.request_id / self.session_id z nagłówków (X-Request-ID, X-Session-ID)
+        - przekazanie requestu do serializerów (get_serializer_context)
+    Nie generuje nowych ID - tym zajmuje się middleware
+    """
+    
+    # --- Nazwy nagłówków, które sprawdzamy (w tym fallback do META) ---
+    REQUEST_ID_HEADERS = ("HTTP_X_REQUEST_ID", "X-Request-ID")
+    SESSION_ID_HEADERS = ("HTTP_X_SESSION_ID", "X-Session-ID")
+    
+    @property
+    def request_id(self) -> Optional[str]:
+        req = getattr(self, "request", None)
+        if not req:
+            return None
+        for key in self.REQUEST_ID_HEADERS:
+            val = req.META.get(key) or req.headers.get(key)
+            if val:
+                return str(val)
+        return None
+    
+    @property
+    def session_id(self) -> Optional[str]:
+        req = getattr(self, "request", None)
+        if not req:
+            return None
+        for key in self.SESSION_ID_HEADERS:
+            val = req.META.get(key) or req.headers.get(key)
+            if val:
+                return str(val)
+        return None
+    
+    def get_serializer_context(self) -> Dict[str, Any]:
+        """
+        Wstrzykujemy request do serializerów, żeby miały dostęp do usera i nagłówków.
+        """
+        base = super().get_serializer_context() if hasattr(super(), "get_serializer_context") else {}
+        base['request'] = getattr(self, 'request', None)
+        return base
+    
+    
+    
+class LatestRateMixin:
+    """
+    Helper do bezpiecznego pobrania bieżącego kursu spółki (StockRate.actual=True).
+    """
+    def get_latest_rate(self, company) -> float:
+        """
+        Zwraca rate (float) dla najnowszego rekordu StockRate z actual=True
+        Wyrzuca ValidationError gdy brak kursu.
+        """
+        try:
+            latest = StockRate.objects.filter(company=company, actual=True).latest('dateInc')
+            return float(latest.rate)
+        except StockRate.DoesNotExist:
+            raise serializers.ValidationError(f"No stock rate available for the selected company.")
+        
+        
+
+class OfferLifecycleMixin(RequestContextMixin):
+    """
+    Wspólne operacje na cyklu życia ofert:
+        - anulowanie oferty kupna: status='cancelled', actual=False + zwrot rezerwy przez BalanceUpdate
+        - anulowanie oferty sprzedaży: status='cancelled', actual=False + oddanie akcji do Stock
+    Wszystko w transakcji, bez zmian sald/akcji w magiczny sposób jak wcześniej
+    """
+    
+    def _now(self):
+        return timezone.now()
+    
+    @transaction.atomic
+    def cancel_buy_offer(self, offer: BuyOffer) -> BuyOffer:
+        """
+        Zwrot rezerwy: startAmount * maxPrice (lub pozostała amount * maxPrice - zależy od polityki).
+        Przyjmujemy zwrot kwoty za POZOSTAŁĄ ilość (offer.amount), aby audyt był spójny z tym, co faktycznie nie zostało zrealizowane.
+        """
+        if offer.status != "active":
+            return offer
+        
+        refundable_amount = max(0, int(offer.amount))
+        refund_value = round(float(offer.maxPrice) * refundable_amount, 2)
+        
+        # Wpis księgowy - oferta wraca na moneyAfterTransactions
+        if refund_value > 0:
+            BalanceUpdate.objects.create(
+                user=offer.user,
+                changeAmount=refund_value,
+                changeType='moneyAfterTransactions',
+                request_id=self.request_id,
+                session_id=self.session_id,
+            )
+            
+        # Oznacz ofertę jako anulowaną
+        offer.status = 'cancelled'
+        offer.actual = False
+        offer.updated_at = self._now() if hasattr(offer, 'updated_at') else offer.updated_at
+        offer.save(update_fields=['status', 'actual'] + (['updated_at'] if hasattr(offer, 'updated_at') else []))
+        return offer
+    
+    
+    
+    @transaction.atomic
+    def cancel_sell_offer(self, offer: SellOffer) -> SellOffer:
+        """
+        Oddanie niewykorzystanych akcji do Stock użytkownika (za pozostałą ilość).
+        """
+        if offer.status != "active":
+            return offer
+        
+        remaining = max(0, int(offer.amount))
+        if remaining > 0:
+            stock, _ = Stock.objects.get_or_create(user=offer.user, company=offer.company)
+            stock.amount = int(stock.amount) + remaining
+            stock.save(update_fields=['amount'])
+            
+        # Oznacz ofertę jako anulowaną
+        offer.status = 'cancelled'
+        offer.actual = False
+        offer.updated_at = self._now() if hasattr(offer, 'updated_at') else offer.updated_at
+        offer.save(update_fields=['status', 'actual'] + (['updated_at'] if hasattr(offer, 'updated_at') else []))
+        return offer
+    
+    # Szybkie helpery odpowiedzi
+    def ok(self, data: dict, *, status_code: int = status.HTTP_200_OK) -> Response:
+        return Response(data, status=status_code)
+    
+    def bad(self, message:str, *, status_code: int = status.HTTP_400_BAD_REQUEST) -> Response:
+        return Response({"detail": message}, status=status_code)
+</file>
+
+<file path="stockProject/stockApp/views/offers.py">
+from rest_framework import status, viewsets
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+
+from stockApp.models import BuyOffer, SellOffer
+from stockApp.serializers import BuyOfferSerializer, SellOfferSerializer
+from stockApp.views.mixins import OfferLifecycleMixin
+
+
+class BuyOfferViewSet(OfferLifecycleMixin, viewsets.ViewSet):
+    """
+    /api/buyoffers/      [GET, POST]
+    /api/buyoffers/{pk}/ [DELETE]
+    - GET     : lista aktywnych zleceń kupna użytkownika
+    - POST    : tworzy zlecenie kupna (walidacje & rezerwy w serializerze)
+    - DELETE  : anuluje zlecenie (zwrot niewykorzystanej rezerwy pieniędzy)
+    Uwaga: brak requestId w body – nagłówek X-Request-ID doda middleware.
+    """
+    permission_classes = [IsAuthenticated]
+
+    # GET /api/buyoffers/
+    def list(self, request):
+        qs = BuyOffer.objects.filter(user=request.user, status='active')  # legacy: actual=True obsłuży tasks
+        data = BuyOfferSerializer(qs, many=True, context=self.get_serializer_context()).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    # POST /api/buyoffers/
+    def create(self, request):
+        serializer = BuyOfferSerializer(data=request.data, context=self.get_serializer_context())
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        offer = serializer.save()
+        return Response(BuyOfferSerializer(offer).data, status=status.HTTP_201_CREATED)
+
+    # DELETE /api/buyoffers/{pk}/
+    def destroy(self, request, pk=None):
+        offer = get_object_or_404(BuyOffer, pk=pk, user=request.user)
+        self.cancel_buy_offer(offer)  # status='cancelled', actual=False, BalanceUpdate (+$ rezerwy)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class SellOfferViewSet(OfferLifecycleMixin, viewsets.ViewSet):
+    """
+    /api/selloffers/      [GET, POST]
+    /api/selloffers/{pk}/ [DELETE]
+    - GET     : lista aktywnych zleceń sprzedaży użytkownika
+    - POST    : tworzy zlecenie sprzedaży (walidacje & rezerwacja akcji w serializerze)
+    - DELETE  : anuluje zlecenie (oddaje niewykorzystane akcje do Stock)
+    Uwaga: brak requestId w body – nagłówek X-Request-ID doda middleware.
+    """
+    permission_classes = [IsAuthenticated]
+
+    # GET /api/selloffers/
+    def list(self, request):
+        qs = SellOffer.objects.filter(user=request.user, status='active')
+        data = SellOfferSerializer(qs, many=True, context=self.get_serializer_context()).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    # POST /api/selloffers/
+    def create(self, request):
+        serializer = SellOfferSerializer(data=request.data, context=self.get_serializer_context())
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        offer = serializer.save()
+        return Response(SellOfferSerializer(offer).data, status=status.HTTP_201_CREATED)
+
+    # DELETE /api/selloffers/{pk}/
+    def destroy(self, request, pk=None):
+        offer = get_object_or_404(SellOffer, pk=pk, user=request.user)
+        self.cancel_sell_offer(offer)  # status='cancelled', actual=False, zwrot akcji do Stock
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+
+
+""" 
+OLD buyOffer.py
+
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from stockApp.serializers import BuyOfferSerializer
+from stockApp.models import BuyOffer
+import uuid
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def addBuyOffer(request):
+    serializer = BuyOfferSerializer(data=request.data, context={'request': request})
+    if serializer.is_valid():
+        serializer.save()
+        data = serializer.data
+        responseData = dict(data)
+        responseData['requestId'] = str(uuid.uuid4())
+        return Response(responseData, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def buyOffers(request):
+    buyOffers = BuyOffer.objects.filter(user=request.user, actual = True)
+    serializer = BuyOfferSerializer(buyOffers, many=True)
+    data = serializer.data
+    responseData = list(data)
+    responseData.append({'requestId': str(uuid.uuid4())})
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def deleteBuyOffer(request,pk):
+    try:
+        buyOffer = BuyOffer.objects.get(pk=pk, user=request.user)
+    except BuyOffer.DoesNotExist:
+        return Response({'requestId': str(uuid.uuid4())},status=status.HTTP_404_NOT_FOUND)
+    # Obliczenie kwoty, którą należy zwrócić do pola moneyAfterTransations
+    totalCost = round(buyOffer.amount * buyOffer.maxPrice,2)
+
+    # Aktualizacja pola moneyAfterTransations użytkownika
+    user = request.user
+    user.moneyAfterTransations += totalCost
+    user.save()
+
+    buyOffer.actual = False
+    buyOffer.save()
+    return Response({'requestId': str(uuid.uuid4())},status=status.HTTP_204_NO_CONTENT)
+"""
+
+""" 
+OLD sellOffer.py
+
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from stockApp.serializers import SellOfferSerializer
+from stockApp.models import SellOffer, Stock
+import uuid
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def addSellOffer(request):
+    serializer = SellOfferSerializer(data=request.data, context={'request': request})
+    if serializer.is_valid():
+        serializer.save()
+        data = serializer.data
+        responseData = dict(data)
+        responseData['requestId'] = str(uuid.uuid4())
+        return Response(responseData, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sellOffers(request):
+    sellOffers = SellOffer.objects.filter(user=request.user, actual = True)
+    serializer = SellOfferSerializer(sellOffers, many=True)
+    data = serializer.data
+    responseData = list(data)
+    responseData.append({'requestId': str(uuid.uuid4())})
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def deleteSellOffer(request, pk):
+    try:
+        sellOffer = SellOffer.objects.get(pk=pk, user=request.user)
+    except SellOffer.DoesNotExist:
+        return Response(status=status.HTTP_404_NOT_FOUND)
+    try:
+        stock = Stock.objects.get(user=request.user, company=sellOffer.company)
+        stock.amount += sellOffer.amount
+        stock.save()
+    except Stock.DoesNotExist:
+        Stock.objects.create(user=request.user, company=sellOffer.company, amount=sellOffer.amount)
+    sellOffer.actual = False
+    sellOffer.save()
+    return Response({'requestId': str(uuid.uuid4())},status=status.HTTP_204_NO_CONTENT)
+"""
+</file>
+
+<file path="stockProject/stockApp/views/user.py">
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from stockApp.models import Stock, CustomUser, Company
+from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
+from stockApp.views.mixins import RequestContextMixin
+
+import random 
+import uuid
+
+
+class FundsView(RequestContextMixin, APIView):
+    """
+    PUT /api/user/funds
+    Aktualizuje dane użytkownika (np. dodanie środków).
+    Wcześniej: addMoney()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def put(self, request, *args, **kwargs):
+        user = request.user
+        serializer = UserUpdateSerializer(user, data=request.data, partial=True, context=self.get_serializer_context())
+
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer.save()
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserStocksView(RequestContextMixin, APIView):
+    """
+    GET /api/user/stocks
+    Zwraca wszystkie akcje użytkownika z amount > 0.
+    Wcześniej: getUserStocks()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        stocks = Stock.objects.filter(user=request.user, amount__gt=0)
+        serializer = StockSerializer(stocks, many=True, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserInfoView(RequestContextMixin, APIView):
+    """
+    GET /api/user/info
+    Zwraca dane aktualnie zalogowanego użytkownika.
+    Wcześniej: getUserInfo()
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        serializer = CustomUserInfoSerializer(request.user, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UsersMoneyCheckView(RequestContextMixin, APIView):
+    """
+    GET /api/users/money-check
+    Dla celów testowych (publiczne API) — średnia ilość środków wszystkich użytkowników.
+    Wcześniej: getUsersMoneyCheck()
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        admin_users = CustomUser.objects.filter(is_superuser=True)
+        users = CustomUser.objects.exclude(id__in=admin_users.values_list('id', flat=True)).all()
+
+        if not users.exists():
+            return Response({"detail": "No non-admin users found."}, status=status.HTTP_404_NOT_FOUND)
+
+        total_money = sum(u.money for u in users)
+        total_after = sum(u.moneyAfterTransactions for u in users)
+        count = users.count()
+
+        avg_money = round(total_money / count, 2)
+        avg_after = round(total_after / count, 2)
+
+        return Response({"money": avg_money, "moneyAT": avg_after}, status=status.HTTP_200_OK)
+    
+
+class DebugAirdropView(RequestContextMixin, APIView):
+    """
+    POST /api/debug/airdrop
+    DEBUG ONLY: Rozdaje użytkownikowi losowe akcje na start (IPO),
+    żeby miał co sprzedawać w symulacji.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = request.user
+        
+        # Zabezpieczenie: Jeśli użytkownik już coś ma, nie dajemy więcej
+        if Stock.objects.filter(user=user, amount__gt=0).exists():
+            return Response(
+                {'message': 'User already has stocks', 'requestId': str(uuid.uuid4())}, 
+                status=status.HTTP_200_OK
+            )
+
+        # Pobierz wszystkie firmy
+        companies = list(Company.objects.all())
+        if not companies:
+            return Response(
+                {'error': 'No companies in market'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Wylosuj ile firm posiada user (np. od 0 do 3)
+        # 0 oznacza, że user startuje tylko z gotówką (ważny przypadek dla ML)
+        number_of_companies = random.choices([0, 1, 2, 3], weights=[10, 40, 30, 20], k=1)[0]
+        
+        created_stocks_info = []
+
+        if number_of_companies > 0:
+            assigned_companies = random.sample(companies, k=min(number_of_companies, len(companies)))
+            
+            for company in assigned_companies:
+                # Losowa ilość akcji (Integery, np. 100 - 5000)
+                amount = random.randint(100, 5000)
+                
+                Stock.objects.create(
+                    user=user,
+                    company=company,
+                    amount=amount
+                )
+                created_stocks_info.append(f"{company.name}: {amount}")
+
+        return Response({
+            'message': 'Airdrop successful', 
+            'stocks_assigned': created_stocks_info,
+            'requestId': str(uuid.uuid4())
+        }, status=status.HTTP_201_CREATED)
+
+"""
+OLD
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
+from stockApp.models import Stock, CustomUser
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework import status
+import uuid
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def addMoney(request):
+    user = request.user
+    serializer = UserUpdateSerializer(user, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        data = serializer.data
+        responseData = dict(data)
+        responseData['requestId'] = str(uuid.uuid4())
+        return Response(responseData, status=status.HTTP_200_OK)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def getUserStocks(request):
+    stocks= Stock.objects.filter(user=request.user, amount__gt = 0)
+    serializer = StockSerializer(stocks, many=True)
+    data = serializer.data
+    responseData = list(data)
+    responseData.append({'requestId': str(uuid.uuid4())})
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def getUserInfo(request):
+    user = request.user
+    serializer = CustomUserInfoSerializer(user)
+    data = serializer.data
+    responseData = dict(data)
+    responseData['requestId'] = str(uuid.uuid4())
+    return Response(responseData, status=status.HTTP_200_OK)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def getUsersMoneyCheck(request):
+    admin_users = CustomUser.objects.filter(is_superuser=True)
+    users = CustomUser.objects.exclude(id__in=admin_users.values_list('id', flat=True)).all()
+    money = 0 
+    moneyat = 0
+    for user in users:
+        money += user.money
+        moneyat += user.moneyAfterTransations
+    money = money / users.count()
+    moneyat = moneyat / users.count()
+    return Response({"money":money,"moneyAT": moneyat,'requestId': str(uuid.uuid4())}, status = status.HTTP_200_OK)
+"""
+</file>
+
+<file path="stockProject/stockApp/admin.py">
+from django.contrib import admin
+from django.contrib.auth.admin import UserAdmin
+from .models import CustomUser, BuyOffer, SellOffer, Company, Transaction, Stock, StockRate,BalanceUpdate
+
+class UserAdmin(UserAdmin):
+    fieldsets = UserAdmin.fieldsets + (
+        (None, {'fields': ('name', 'surname', 'money', 'role','moneyAfterTransations')}),
+    )
+
+# stockApp/admin.py
+from django.contrib import admin
+from .models.errorLog import ErrorLog
+
+@admin.register(ErrorLog)
+class ErrorLogAdmin(admin.ModelAdmin):
+    list_display = ('timestamp','level','component','error_code','request_id','service_name','env')
+    list_filter = ('level','component','service_name','env')
+    search_fields = ('message','error_code','request_id','parent_request_id','container_id')
+
+
+admin.site.register(CustomUser, UserAdmin)
+admin.site.register(BuyOffer)
+admin.site.register(SellOffer)
+admin.site.register(StockRate)
+admin.site.register(Stock)
+admin.site.register(Company)
+admin.site.register(Transaction)
+admin.site.register(BalanceUpdate)
+</file>
+
+<file path="stockProject/stockApp/apps.py">
+from django.apps import AppConfig
+
+
+class StockappConfig(AppConfig):
+    default_auto_field = 'django.db.models.BigAutoField'
+    name = 'stockApp'
+</file>
+
+<file path="stockProject/stockApp/tasks.py">
+from __future__ import annotations
+
+import os
+import json
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from celery import shared_task
+from django.db import transaction
+from django.utils.timezone import now
+
+from stockApp.models import (
+    Company,
+    Stock,
+    StockRate,
+    BuyOffer,
+    SellOffer,
+    BalanceUpdate,
+    Transaction,
+    TradeLog,
+    ErrorLog,
+)
+
+# ========= Konfiguracja logów / kontekstu środowiska =========
+
+LOG_DIR = Path(os.getenv("LOG_DIR", "/logs")).resolve()
+TRADE_JSONL = LOG_DIR / os.getenv("TRADE_LOG_JSONL", "trade_log.jsonl")
+ERROR_JSONL = LOG_DIR / os.getenv("ERROR_LOG_JSONL", "error_log.jsonl")
+
+ENV = os.getenv("ENV", "dev")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "celery")
+SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.1.0")
+CONTAINER_ID = os.getenv("HOSTNAME", None)
+
+EXPERIMENT_ID = os.getenv("EXPERIMENT_ID", None)
+PHASE = os.getenv("PHASE", None)
+SCENARIO = os.getenv("SCENARIO_ID", None)
+
+
+def _utc() -> str:
+    return now().isoformat()
+
+
+def _append_jsonl(path: Path, row: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        # nie blokuj taska gdy fs niedostępny
+        pass
+
+
+def _trade_jsonl(
+    *,
+    trade_id: str,
+    parent_request_id: Optional[str],
+    kind: str,
+    cycle_time_ms: float,
+    db_time_ms: Optional[float],
+    queue_time_ms: Optional[float],
+    matched_pairs: int = 0,
+    partial_fills: int = 0,
+    rejected_offers: int = 0,
+    reason_code: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    row = {
+        "trade_id": trade_id,
+        "timestamp": _utc(),
+        "kind": kind,  # np. MATCH_EXECUTE / RATES_UPDATE / BALANCES_APPLY / OFFERS_EXPIRE
+        "parent_request_id": parent_request_id,
+        "cycle_time_ms": round(cycle_time_ms, 2),
+        "db_time_ms": round(db_time_ms, 2) if db_time_ms is not None else None,
+        "queue_time_ms": round(queue_time_ms, 2) if queue_time_ms is not None else None,
+        "matched_pairs": matched_pairs,
+        "partial_fills": partial_fills,
+        "rejected_offers": rejected_offers,
+        "reason_code": reason_code,
+        "service_name": SERVICE_NAME,
+        "container_id": CONTAINER_ID,
+        "env": ENV,
+        "service_version": SERVICE_VERSION,
+        "experiment_id": EXPERIMENT_ID,
+        "phase": PHASE,
+        "scenario": SCENARIO,
+        "details": details or {},
+    }
+    _append_jsonl(TRADE_JSONL, row)
+
+
+def _error_jsonl(
+    *,
+    level: str,
+    component: str,
+    message: str,
+    error_code: Optional[str] = None,
+    request_id: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    row = {
+        "error_id": str(uuid.uuid4()),
+        "timestamp": _utc(),
+        "level": level,
+        "component": component,
+        "request_id": request_id,
+        "error_code": error_code,
+        "message": message,
+        "env": ENV,
+        "service_version": SERVICE_VERSION,
+        "container_id": CONTAINER_ID,
+        "context": context or {},
+    }
+    _append_jsonl(ERROR_JSONL, row)
+
+
+def _safe_update_single_actual_stockrate(company: Company, rate_value: float) -> StockRate:
+    """
+    Utrzymuje dokładnie jeden aktualny kurs (actual=True) na firmę.
+    """
+    # wygaszamy poprzednie
+    StockRate.objects.filter(company=company, actual=True).update(actual=False)
+    # dodajemy nowy
+    sr = StockRate.objects.create(
+        company=company,
+        rate=float(rate_value),
+        actual=True,
+        dateInc=now(),
+    )
+    return sr
+
+
+# ========= A) Scheduler dopasowań =========
+
+@shared_task(bind=True, acks_late=True, time_limit=60, soft_time_limit=45)
+def match_scheduler(self, *, parent_request_id: Optional[str] = None) -> str:
+    """
+    Układa paczki spółek i kolejkuje dopasowania (match_execute).
+    parent_request_id: jeśli wywołane z widoku (API) - korelacja HTTP → Celery.
+    """
+    t0 = time.perf_counter()
+    db_ms = 0.0
+
+    try:
+        t_db = time.perf_counter()
+        company_ids = list(Company.objects.values_list("id", flat=True))
+        db_ms += (time.perf_counter() - t_db) * 1000.0
+
+        # Prosty batching po 10 spółek (wystarcza do eksperymentów)
+        batch_size = int(os.getenv("MATCH_BATCH_SIZE", "10"))
+        batches: List[List[int]] = [
+            company_ids[i : i + batch_size] for i in range(0, len(company_ids), batch_size)
+        ]
+
+        for batch in batches:
+            match_execute.delay(company_ids=batch, parent_request_id=parent_request_id)
+
+        cycle_ms = (time.perf_counter() - t0) * 1000.0
+
+        # JSONL (tylko meta)
+        _trade_jsonl(
+            trade_id=str(uuid.uuid4()),
+            parent_request_id=parent_request_id,
+            kind="MATCH_SCHEDULER",
+            cycle_time_ms=cycle_ms,
+            db_time_ms=db_ms,
+            queue_time_ms=None,
+            details={"batches": len(batches), "total_companies": len(company_ids)},
+        )
+
+        # wpis do DB (syntetyczny)
+        TradeLog.objects.create(
+            timestamp=now(),
+            applicationTime=round(cycle_ms, 2),
+            databaseTime=round(db_ms, 2),
+            numberOfSellOffers=0,
+            numberOfBuyOffers=0,
+            companyIds=[int(x) for x in company_ids],
+            parent_request_id=parent_request_id,
+            details={"batches": len(batches)},
+        )
+        return "scheduled"
+
+    except Exception as exc:
+        msg = f"match_scheduler failed: {exc}"
+        ErrorLog.objects.create(
+            error_id=str(uuid.uuid4()),
+            timestamp=now(),
+            level="ERROR",
+            component="celery",
+            request_id=parent_request_id,
+            parent_request_id=parent_request_id,
+            error_code="EXCEPTION",
+            message=msg,
+            stack=None,
+            context={"task": "match_scheduler"},
+            env=ENV,
+            service_version=SERVICE_VERSION,
+            container_id=CONTAINER_ID,
+        )
+        _error_jsonl(level="ERROR", component="celery", message=msg, error_code="EXCEPTION",
+                     request_id=parent_request_id, context={"task": "match_scheduler"})
+        raise
+
+
+# ========= B) Dopasowanie zleceń =========
+
+@shared_task(bind=True, acks_late=True, time_limit=180, soft_time_limit=150)
+def match_execute(
+    self,
+    *,
+    company_ids: Iterable[int],
+    parent_request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Dla paczki firm kojarzy oferty kupna/sprzedaży.
+    Zbiera metryki: cycle_time_ms, db_time_ms, wyniki biznesowe, zapisuje TradeLog + JSONL.
+    """
+    t0 = time.perf_counter()
+    db_ms = 0.0
+    matched_pairs = 0
+    partial_fills = 0
+    rejected_offers = 0
+
+    trade_id = str(uuid.uuid4())
+    details: Dict[str, Any] = {"companies": list(company_ids)}
+
+    try:
+        # przykład banalnej logiki: dla każdej firmy paruj najtańszą sprzedaż z najdroższym kupnem
+        for cid in company_ids:
+            # Pobrania z DB
+            t_db = time.perf_counter()
+            company = Company.objects.get(pk=cid)
+            sell_qs = SellOffer.objects.select_for_update().filter(company=company, actual=True).order_by("minPrice")
+            buy_qs = BuyOffer.objects.select_for_update().filter(company=company, actual=True).order_by("-maxPrice")
+            db_ms += (time.perf_counter() - t_db) * 1000.0
+
+            with transaction.atomic():
+                while sell_qs.exists() and buy_qs.exists():
+                    t_db = time.perf_counter()
+                    sell = sell_qs.first()
+                    buy = buy_qs.first()
+                    db_ms += (time.perf_counter() - t_db) * 1000.0
+                    if sell is None or buy is None:
+                        break
+
+                    # warunek ceny
+                    if buy.maxPrice < sell.minPrice:
+                        # brak dopasowania cenowego
+                        rejected_offers += 1
+                        break
+
+                    # wyznacz wolumen transakcji
+                    amount = min(sell.amount, buy.amount)
+
+                    # utwórz transakcję
+                    t_db = time.perf_counter()
+                    Transaction.objects.create(
+                        buyOffer=buy, sellOffer=sell, amount=amount, price=sell.minPrice, totalPrice=sell.minPrice * amount
+                    )
+                    db_ms += (time.perf_counter() - t_db) * 1000.0
+
+                    matched_pairs += 1
+                    if amount < sell.amount or amount < buy.amount:
+                        partial_fills += 1
+
+                    # aktualizuj rezerwy i stany
+                    t_db = time.perf_counter()
+                    # kupujący: ściągamy z zarezerwowanej puli (moneyAfterTransactions — rezerwa była blokowana wcześniej)
+                    buy.amount -= amount
+                    if buy.amount == 0:
+                        buy.actual = False
+                    buy.save()
+
+                    # sprzedający: odejmujemy akcje z wystawionej oferty
+                    sell.amount -= amount
+                    if sell.amount == 0:
+                        sell.actual = False
+                    sell.save()
+                    db_ms += (time.perf_counter() - t_db) * 1000.0
+
+                    # odśwież qs-y w pętli
+                    t_db = time.perf_counter()
+                    sell_qs = SellOffer.objects.select_for_update().filter(company=company, actual=True).order_by("minPrice")
+                    buy_qs = BuyOffer.objects.select_for_update().filter(company=company, actual=True).order_by("-maxPrice")
+                    db_ms += (time.perf_counter() - t_db) * 1000.0
+
+        # podsumowanie
+        details.update(
+            {
+                "matched_pairs": matched_pairs,
+                "partial_fills": partial_fills,
+                "rejected_offers": rejected_offers,
+            }
+        )
+
+        cycle_ms = (time.perf_counter() - t0) * 1000.0
+
+        # JSONL + DB
+        _trade_jsonl(
+            trade_id=trade_id,
+            parent_request_id=parent_request_id,
+            kind="MATCH_EXECUTE",
+            cycle_time_ms=cycle_ms,
+            db_time_ms=db_ms,
+            queue_time_ms=None,  # możesz dodać obliczanie z self.request jeśli chcesz
+            matched_pairs=matched_pairs,
+            partial_fills=partial_fills,
+            rejected_offers=rejected_offers,
+            reason_code=None if rejected_offers == 0 else "NO_LIQUIDITY",
+            details=details,
+        )
+
+        TradeLog.objects.create(
+            timestamp=now(),
+            applicationTime=round(cycle_ms, 2),
+            databaseTime=round(db_ms, 2),
+            numberOfSellOffers=0,  # nieużywane dalej – zostają dla zgodności starego modelu
+            numberOfBuyOffers=0,
+            companyIds=list(company_ids),
+            parent_request_id=parent_request_id,
+            matched_pairs=matched_pairs,
+            partial_fills=partial_fills,
+            rejected_offers=rejected_offers,
+            reason_code=None if rejected_offers == 0 else "NO_LIQUIDITY",
+            details=details,
+        )
+
+        return {
+            "trade_id": trade_id,
+            "cycle_time_ms": cycle_ms,
+            "db_time_ms": db_ms,
+            "matched_pairs": matched_pairs,
+            "partial_fills": partial_fills,
+            "rejected_offers": rejected_offers,
+        }
+
+    except Exception as exc:
+        msg = f"match_execute failed: {exc}"
+        ErrorLog.objects.create(
+            error_id=str(uuid.uuid4()),
+            timestamp=now(),
+            level="ERROR",
+            component="celery",
+            request_id=parent_request_id,
+            parent_request_id=parent_request_id,
+            error_code="EXCEPTION",
+            message=msg,
+            stack=None,
+            context={"task": "match_execute", "companies": list(company_ids)},
+            env=ENV,
+            service_version=SERVICE_VERSION,
+            container_id=CONTAINER_ID,
+        )
+        _error_jsonl(level="ERROR", component="celery", message=msg, error_code="EXCEPTION",
+                     request_id=parent_request_id, context={"task": "match_execute"})
+        raise
+
+
+# ========= C) Aktualizacja kursów =========
+
+@shared_task(bind=True, acks_late=True, time_limit=120, soft_time_limit=90)
+def rates_update(self, *, parent_request_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Aktualizuje kursy (StockRate) - utrzymuje dokładnie jeden actual=True na firmę.
+    """
+    t0 = time.perf_counter()
+    db_ms = 0.0
+    trade_id = str(uuid.uuid4())
+
+    try:
+        # prościutki trend: +- losowa szpilka wokół poprzedniego (dla demo)
+        import random
+
+        t_db = time.perf_counter()
+        companies = list(Company.objects.all())
+        db_ms += (time.perf_counter() - t_db) * 1000.0
+
+        changed: List[Tuple[int, float]] = []
+        for c in companies:
+            t_db = time.perf_counter()
+            last = StockRate.objects.filter(company=c, actual=True).order_by("-dateInc").first()
+            db_ms += (time.perf_counter() - t_db) * 1000.0
+
+            base = last.rate if last else random.uniform(10, 100)
+            delta = random.uniform(-1.0, 1.0)
+            new_rate = max(0.01, base + delta)
+
+            t_db = time.perf_counter()
+            _safe_update_single_actual_stockrate(c, new_rate)
+            db_ms += (time.perf_counter() - t_db) * 1000.0
+
+            changed.append((c.id, new_rate))
+
+        cycle_ms = (time.perf_counter() - t0) * 1000.0
+
+        _trade_jsonl(
+            trade_id=trade_id,
+            parent_request_id=parent_request_id,
+            kind="RATES_UPDATE",
+            cycle_time_ms=cycle_ms,
+            db_time_ms=db_ms,
+            queue_time_ms=None,
+            details={"updated": changed[:20], "updated_total": len(changed)},
+        )
+
+        TradeLog.objects.create(
+            timestamp=now(),
+            applicationTime=round(cycle_ms, 2),
+            databaseTime=round(db_ms, 2),
+            numberOfSellOffers=0,
+            numberOfBuyOffers=0,
+            companyIds=[cid for cid, _ in changed],
+            parent_request_id=parent_request_id,
+            details={"updated_count": len(changed)},
+        )
+
+        return {"updated_count": len(changed), "cycle_time_ms": cycle_ms, "db_time_ms": db_ms}
+
+    except Exception as exc:
+        msg = f"rates_update failed: {exc}"
+        ErrorLog.objects.create(
+            error_id=str(uuid.uuid4()),
+            timestamp=now(),
+            level="ERROR",
+            component="celery",
+            request_id=parent_request_id,
+            parent_request_id=parent_request_id,
+            error_code="EXCEPTION",
+            message=msg,
+            stack=None,
+            context={"task": "rates_update"},
+            env=ENV,
+            service_version=SERVICE_VERSION,
+            container_id=CONTAINER_ID,
+        )
+        _error_jsonl(level="ERROR", component="celery", message=msg, error_code="EXCEPTION",
+                     request_id=parent_request_id, context={"task": "rates_update"})
+        raise
+
+
+# ========= D) Zastosowanie operacji bilansowych =========
+
+@shared_task(bind=True, acks_late=True, time_limit=120, soft_time_limit=90)
+def balances_apply(self, *, parent_request_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Aplikuje oczekujące BalanceUpdate (księga zdarzeń).
+    Preferuj flagę applied/applied_at; jeśli model ma tylko actual – użyj jej jako „niezastosowane”.
+    """
+    t0 = time.perf_counter()
+    db_ms = 0.0
+    trade_id = str(uuid.uuid4())
+
+    applied = 0
+
+    try:
+        # wybierz do zastosowania
+        t_db = time.perf_counter()
+        qs = BalanceUpdate.objects.filter(actual=True)
+        db_ms += (time.perf_counter() - t_db) * 1000.0
+
+        for bu in qs.select_for_update():
+            with transaction.atomic():
+                t_db = time.perf_counter()
+                user = bu.user
+                if bu.changeType == "money":
+                    user.money += float(bu.changeAmount)
+                else:  # "moneyAfterTransactions"
+                    # to jest nasza „rezerwa”
+                    user.moneyAfterTransactions += float(bu.changeAmount)
+                user.save()
+                db_ms += (time.perf_counter() - t_db) * 1000.0
+
+                # oznacz zastosowanie (preferowana flaga applied; wstecznie: actual=False)
+                if hasattr(bu, "applied"):
+                    bu.applied = True
+                bu.actual = False
+                setattr(bu, "applied_at", now())
+                bu.save()
+                applied += 1
+
+        cycle_ms = (time.perf_counter() - t0) * 1000.0
+
+        _trade_jsonl(
+            trade_id=trade_id,
+            parent_request_id=parent_request_id,
+            kind="BALANCES_APPLY",
+            cycle_time_ms=cycle_ms,
+            db_time_ms=db_ms,
+            queue_time_ms=None,
+            details={"applied": applied},
+        )
+
+        TradeLog.objects.create(
+            timestamp=now(),
+            applicationTime=round(cycle_ms, 2),
+            databaseTime=round(db_ms, 2),
+            numberOfSellOffers=0,
+            numberOfBuyOffers=0,
+            companyIds=[],
+            parent_request_id=parent_request_id,
+            details={"applied": applied},
+        )
+
+        return {"applied": applied, "cycle_time_ms": cycle_ms, "db_time_ms": db_ms}
+
+    except Exception as exc:
+        msg = f"balances_apply failed: {exc}"
+        ErrorLog.objects.create(
+            error_id=str(uuid.uuid4()),
+            timestamp=now(),
+            level="ERROR",
+            component="celery",
+            request_id=parent_request_id,
+            parent_request_id=parent_request_id,
+            error_code="EXCEPTION",
+            message=msg,
+            stack=None,
+            context={"task": "balances_apply"},
+            env=ENV,
+            service_version=SERVICE_VERSION,
+            container_id=CONTAINER_ID,
+        )
+        _error_jsonl(level="ERROR", component="celery", message=msg, error_code="EXCEPTION",
+                     request_id=parent_request_id, context={"task": "balances_apply"})
+        raise
+
+
+# ========= E) Wygaszanie ofert =========
+
+@shared_task(bind=True, acks_late=True, time_limit=120, soft_time_limit=90)
+def offers_expire(self, *, parent_request_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Oznacza przeterminowane oferty i zwraca rezerwy.
+    """
+    t0 = time.perf_counter()
+    db_ms = 0.0
+    trade_id = str(uuid.uuid4())
+
+    expired_count = 0
+
+    try:
+        t_db = time.perf_counter()
+        expired_buys = BuyOffer.objects.filter(actual=True, dateLimit__lt=now())
+        expired_sells = SellOffer.objects.filter(actual=True, dateLimit__lt=now())
+        db_ms += (time.perf_counter() - t_db) * 1000.0
+
+        with transaction.atomic():
+            # BUY: odblokuj rezerwę (moneyAfterTransactions)
+            for bo in expired_buys.select_for_update():
+                user = bo.user
+                refund = float(bo.amount * bo.maxPrice)
+                user.moneyAfterTransactions += refund
+                user.save()
+                bo.actual = False
+                bo.save()
+                expired_count += 1
+
+            # SELL: zwróć akcje do stanu użytkownika
+            for so in expired_sells.select_for_update():
+                stock, _ = Stock.objects.get_or_create(user=so.user, company=so.company, defaults={"amount": 0})
+                stock.amount += so.amount
+                stock.save()
+                so.actual = False
+                so.save()
+                expired_count += 1
+
+        cycle_ms = (time.perf_counter() - t0) * 1000.0
+
+        _trade_jsonl(
+            trade_id=trade_id,
+            parent_request_id=parent_request_id,
+            kind="OFFERS_EXPIRE",
+            cycle_time_ms=cycle_ms,
+            db_time_ms=db_ms,
+            queue_time_ms=None,
+            rejected_offers=expired_count,
+            reason_code="EXPIRED",
+            details={"expired": expired_count},
+        )
+
+        TradeLog.objects.create(
+            timestamp=now(),
+            applicationTime=round(cycle_ms, 2),
+            databaseTime=round(db_ms, 2),
+            numberOfSellOffers=0,
+            numberOfBuyOffers=0,
+            companyIds=[],
+            parent_request_id=parent_request_id,
+            reason_code="EXPIRED",
+            rejected_offers=expired_count,
+            details={"expired": expired_count},
+        )
+
+        return {"expired": expired_count, "cycle_time_ms": cycle_ms, "db_time_ms": db_ms}
+
+    except Exception as exc:
+        msg = f"offers_expire failed: {exc}"
+        ErrorLog.objects.create(
+            error_id=str(uuid.uuid4()),
+            timestamp=now(),
+            level="ERROR",
+            component="celery",
+            request_id=parent_request_id,
+            parent_request_id=parent_request_id,
+            error_code="EXCEPTION",
+            message=msg,
+            stack=None,
+            context={"task": "offers_expire"},
+            env=ENV,
+            service_version=SERVICE_VERSION,
+            container_id=CONTAINER_ID,
+        )
+        _error_jsonl(level="ERROR", component="celery", message=msg, error_code="EXCEPTION",
+                     request_id=parent_request_id, context={"task": "offers_expire"})
+        raise
+</file>
+
+<file path="stockProject/stockApp/urls.py">
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+
+from stockApp.views.auth import SignUpView, SignInView
+from stockApp.views.companies import CompanyViewSet, CompanyRatesView
+from stockApp.views.offers import BuyOfferViewSet, SellOfferViewSet
+from stockApp.views.user import FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView, DebugAirdropView
+
+
+router = DefaultRouter()
+router.register(r'companies', CompanyViewSet, basename='companies')
+router.register(r'buyoffers', BuyOfferViewSet, basename='buyoffers')
+router.register(r'selloffers', SellOfferViewSet, basename='selloffers')
+
+urlpatterns = [
+    # Auth
+    path('signUp/', SignUpView.as_view(), name='sign-up'),
+    path('signIn/', SignInView.as_view(), name='sign-in'),
+    
+    # User
+    path('user/funds/', FundsView.as_view(), name='user-funds'),
+    path('user/stocks/', UserStocksView.as_view(), name='user-stocks'),
+    path('user/info/', UserInfoView.as_view(), name='user-info'),
+    path('users/money-check/', UsersMoneyCheckView.as_view(), name='users-money-check'),
+    
+    # Airdrop
+    path('debug/airdrop/', DebugAirdropView.as_view(), name='debug-airdrop'),
+
+    # Companies
+    path('companies/rates/', CompanyRatesView.as_view(), name='company-rates'),
+
+    # Router (companies list/create)
+    path('', include(router.urls)),
+]
+
+
+
+#OLD
+# urlpatterns = [
+    # path('api/signIn', views.signIn, name='signIn'),
+    # path('api/signUp', views.signUp, name='signUp'),
+    # path('api/addCompany', views.createCompany, name='addCompany'),
+    # path('api/companies', views.companies, name='companies'),
+    # path('api/addBuyOffer', views.addBuyOffer, name='addBuyOffer'),
+    # path('api/addSellOffer',views.addSellOffer, name='addSellOffer'),
+    # path('api/user/buyOffers', views.buyOffers, name='buyOffers'),
+    # path('api/user/sellOffers',views.sellOffers, name='sellOffers'),
+    # path('api/deleteBuyOffer/<int:pk>', views.deleteBuyOffer, name='deleteBuyOffer'),
+    # path('api/deleteSellOffer/<int:pk>', views.deleteSellOffer, name='deleteSellOffer'),
+    # path('api/user/addMoney', views.addMoney, name='addMoney'),
+    # path('api/user/stocks', views.getUserStocks, name='getUserStocks'),
+    # path('api/user', views.getUserInfo, name='getUserInfo'),
+    # path('api/deleteDb', views.deleteAllDb, name='deleteDb'),
+    # path('api/usersMoneyCheck', views.getUsersMoneyCheck, name='getUsersMoneyCheck'),
+    # path('api/getCompaniesStockRates', views.getCompaniesStockRates, name ='getCompaniesStockRates'),
+# ]
+</file>
+
+<file path="stockProject/stockProject/asgi.py">
+"""
+ASGI config for stockProject project.
+
+It exposes the ASGI callable as a module-level variable named ``application``.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/5.0/howto/deployment/asgi/
+"""
+
+import os
+
+from django.core.asgi import get_asgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'stockProject.settings')
+
+application = get_asgi_application()
+</file>
+
+<file path="stockProject/stockProject/celery.py">
+from __future__ import absolute_import, unicode_literals
+
+import os
+from celery import Celery
+from celery.schedules import schedule  # proste interwały w sekundach
+
+# Domyślne ustawienia Django dla Celery
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "stockProject.settings")
+
+app = Celery("stockProject")
+
+# Konfiguracja z Django (CELERY_*)
+app.config_from_object("django.conf:settings", namespace="CELERY")
+
+# Auto-odkrywanie zadań w aplikacjach (stockApp.tasks)
+app.autodiscover_tasks()
+
+
+@app.task(bind=True)
+def debug_task(self):
+    print(f"[CELERY DEBUG] Request: {self.request!r}")
+
+
+# --------- Routing / kolejki (czytelne kolejki tematyczne) ---------
+app.conf.task_queues = (
+    # kolejki są tworzone automatycznie po pierwszym użyciu
+)
+
+app.conf.task_routes = {
+    "stockApp.tasks.match_scheduler": {"queue": "transactions"},
+    "stockApp.tasks.match_execute": {"queue": "transactions"},
+    "stockApp.tasks.rates_update": {"queue": "stock_rates"},
+    "stockApp.tasks.balances_apply": {"queue": "balance_updates"},
+    "stockApp.tasks.offers_expire": {"queue": "expire_offers"},
+}
+
+# --------- Harmonogram (Celery Beat) ---------
+# Częstotliwości pobieramy z ENV (sekundy); mają sensowne defaulty pod eksperymenty.
+def _env_seconds(key: str, default: float) -> schedule:
+    try:
+        return schedule(float(os.getenv(key, default)))
+    except Exception:
+        return schedule(default)
+
+app.conf.beat_schedule = {
+    # 1) Orkiestracja dopasowań (kolejkuje match_execute)
+    "match-scheduler": {
+        "task": "stockApp.tasks.match_scheduler",
+        "schedule": _env_seconds("SCHED_MATCH_S", 5.0),
+        "options": {"queue": "transactions"},
+        # kwargs bez parent_request_id (None) — to zadanie jest „systemowe”
+    },
+
+    # 2) Aktualizacje kursów
+    "rates-update": {
+        "task": "stockApp.tasks.rates_update",
+        "schedule": _env_seconds("SCHED_RATES_S", 10.0),
+        "options": {"queue": "stock_rates"},
+    },
+
+    # 3) Aplikacja zmian sald (księga zdarzeń)
+    "balances-apply": {
+        "task": "stockApp.tasks.balances_apply",
+        "schedule": _env_seconds("SCHED_BALANCES_S", 7.5),
+        "options": {"queue": "balance_updates"},
+    },
+
+    # 4) Wygaszanie przeterminowanych ofert
+    "offers-expire": {
+        "task": "stockApp.tasks.offers_expire",
+        "schedule": _env_seconds("SCHED_EXPIRE_S", 60.0),
+        "options": {"queue": "expire_offers"},
+    },
+}
+
+# Strefa czasu (jeśli chcesz trzymać się UTC w logach – zostaw domyślne)
+app.conf.timezone = os.getenv("CELERY_TIMEZONE", "UTC")
+app.conf.enable_utc = True
+</file>
+
+<file path="stockProject/stockProject/settings.py">
+"""
+Django settings for stockProject project.
+
+Generated by 'django-admin startproject' using Django 5.0.6.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/5.0/topics/settings/
+
+For the full list of settings and their values, see
+https://docs.djangoproject.com/en/5.0/ref/settings/
+"""
+
+from pathlib import Path
+import os
+
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = 'django-insecure-zrz$uuw!l+*=^b&!4071)bz0%9ma9rqa@di%(z5aqhl$ifsw)0'
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = True
+
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+#ALLOWED_HOSTS = ['127.0.0.1','192.168.1.110','localhost', 'web']
+
+
+# Application definition
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'stockApp',
+    'rest_framework',
+    'rest_framework.authtoken',
+    'django_celery_beat',
+    'drf_yasg',
+    'django_extensions',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    #'stockApp.middleware.LogRequestMiddleware.LogRequestMiddleware',
+    'stockApp.middleware.request_logging.RequestLoggingMiddleware',
+]
+
+# Kontekst środowiskowy
+ENV = os.getenv("ENV", "dev")
+SERVICE_NAME = os.getenv("SERVICE_NAME", "api")
+SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.1.0")
+HOSTNAME = os.getenv("HOSTNAME", "")  # w kontenerze Docker zwykle ustawia się samo
+
+# Ścieżki logów
+LOG_DIR = os.getenv("LOG_DIR", "/logs")
+REQUEST_LOG_JSONL = os.getenv("REQUEST_LOG_JSONL", "request_log.jsonl")
+ERROR_LOG_JSONL = os.getenv("ERROR_LOG_JSONL", "error_log.jsonl")
+
+ROOT_URLCONF = 'stockProject.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [BASE_DIR, 'templates'],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+WSGI_APPLICATION = 'stockProject.wsgi.application'
+
+
+# Database
+# https://docs.djangoproject.com/en/5.0/ref/settings/#databases
+
+# Database
+# https://docs.djangoproject.com/en/5.0/ref/settings/#databases
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'stock',
+        'USER': 'postgres',
+        #'PASSWORD': 'admin',
+        'PASSWORD': 'postgres',
+        #'HOST': 'localhost',
+        'HOST': 'db',  # Nazwa serwisu z pliku docker-compose.yml
+        'PORT': '5432',
+    },
+    'test': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'test_stock',
+        'USER': 'postgres',
+        #'PASSWORD': 'admin',
+        'PASSWORD': 'postgres',
+        'HOST': 'db_test',
+        'PORT': '5432',
+        #'HOST': 'localhost'
+    }
+}
+
+AUTH_USER_MODEL = 'stockApp.CustomUser'
+
+
+# Password validation
+# https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
+
+
+# Internationalization
+# https://docs.djangoproject.com/en/5.0/topics/i18n/
+
+LANGUAGE_CODE = 'en-us'
+
+TIME_ZONE = 'UTC'
+
+USE_I18N = True
+
+USE_TZ = True
+
+
+# Static files (CSS, JavaScript, Images)
+# https://docs.djangoproject.com/en/5.0/howto/static-files/
+
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'static')
+# Default primary key field type
+# https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+#CELERY_BROKER_URL = 'redis://localhost:6379/0'
+#CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
+CELERY_BROKER_URL = 'redis://redis:6379/0'
+CELERY_RESULT_BACKEND = 'redis://redis:6379/0'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'Europe/Warsaw'
+
+from kombu import Exchange, Queue
+
+CELERY_QUEUES = (
+    Queue('default', Exchange('default'), routing_key='default'),
+    Queue('transactions', Exchange('transactions'), routing_key='transactions'),
+    Queue('balance_updates', Exchange('balance_updates'), routing_key='balance_updates'),
+    Queue('stock_rates', Exchange('stock_rates'), routing_key='stock_rates'),
+    Queue('expire_offers', Exchange('expire_offers'), routing_key='expire_offers'),
+)
+
+CELERY_ROUTES = {
+    'stockApp.tasks.scheduleTransactions': {'queue': 'transactions'},
+    'stockApp.tasks.processBalanceUpdates': {'queue': 'balance_updates'},
+    'stockApp.tasks.updateRtockRates': {'queue': 'stock_rates'},
+    'stockApp.tasks.expireOffers': {'queue': 'expire_offers'},
+}
+
+
+
+import warnings
+
+warnings.filterwarnings("ignore", category=RuntimeWarning, module='django.db.models.fields')
+</file>
+
+<file path="stockProject/stockProject/urls.py">
+"""
+URL configuration for stockProject project.
+
+The `urlpatterns` list routes URLs to views. For more information please see:
+    https://docs.djangoproject.com/en/5.0/topics/http/urls/
+Examples:
+Function views
+    1. Add an import:  from my_app import views
+    2. Add a URL to urlpatterns:  path('', views.home, name='home')
+Class-based views
+    1. Add an import:  from other_app.views import Home
+    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
+Including another URLconf
+    1. Import the include() function: from django.urls import include, path
+    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+"""
+from django.conf import settings
+from django.conf.urls.static import static
+from django.contrib import admin
+from django.urls import path, include
+from django.urls import re_path
+from rest_framework import permissions
+from drf_yasg.views import get_schema_view
+from drf_yasg import openapi
+
+schema_view = get_schema_view(
+   openapi.Info(
+      title="Snippets API",
+      default_version='v1',
+      description="Test description",
+      terms_of_service="https://www.google.com/policies/terms/",
+      contact=openapi.Contact(email="contact@snippets.local"),
+      license=openapi.License(name="BSD License"),
+   ),
+   public=True,
+   permission_classes=(permissions.AllowAny,),
+)
+urlpatterns = [
+    path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+    path('admin/', admin.site.urls),
+    path('api-auth/', include('rest_framework.urls')),
+    path('api/',include('stockApp.urls'))
+]
+
+
+if settings.DEBUG:
+    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+</file>
+
+<file path="stockProject/stockProject/wsgi.py">
+"""
+WSGI config for stockProject project.
+
+It exposes the WSGI callable as a module-level variable named ``application``.
+
+For more information on this file, see
+https://docs.djangoproject.com/en/5.0/howto/deployment/wsgi/
+"""
+
+import os
+
+from django.core.wsgi import get_wsgi_application
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'stockProject.settings')
+
+application = get_wsgi_application()
+</file>
+
+</files>

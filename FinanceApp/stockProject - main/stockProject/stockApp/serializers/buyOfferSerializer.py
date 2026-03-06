@@ -7,7 +7,8 @@ from .helpers import _get_request_id, _get_session_id
 class BuyOfferSerializer(serializers.ModelSerializer):
     class Meta:
         model = BuyOffer
-        fields = ['company', 'startAmount', 'amount']  # na zewnątrz trzymamy minimalny interfejs
+        fields = ['id', 'company', 'startAmount', 'amount', 'maxPrice', 'dateLimit', 'status']  # na zewnątrz trzymamy minimalny interfejs
+        read_only_fields = ['id', 'maxPrice', 'dateLimit', 'status']
 
     def validate(self, attrs):
         if attrs.get('amount', 0) <= 0:
