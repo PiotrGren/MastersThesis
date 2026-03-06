@@ -2,6 +2,63 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
 from stockApp.views.auth import SignUpView, SignInView
+from stockApp.views.companies import CompanyViewSet, CompanyRatesView, CompanyNewsView, MarketSentimentView
+from stockApp.views.offers import BuyOfferViewSet, SellOfferViewSet, BuyOfferCalculateView
+from stockApp.views.user import (
+    FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView, DebugAirdropView,
+    UserWatchlistView, PortfolioAnalysisView, TradeHistoryView, UserSettingsView
+)
+
+
+router = DefaultRouter()
+router.register(r'companies', CompanyViewSet, basename='companies')
+router.register(r'buyoffers', BuyOfferViewSet, basename='buyoffers')
+router.register(r'selloffers', SellOfferViewSet, basename='selloffers')
+
+urlpatterns = [
+    # Auth
+    path('signUp/', SignUpView.as_view(), name='sign-up'),
+    path('signIn/', SignInView.as_view(), name='sign-in'),
+    
+    # User (Core)
+    path('user/funds/', FundsView.as_view(), name='user-funds'),
+    path('user/stocks/', UserStocksView.as_view(), name='user-stocks'),
+    path('user/info/', UserInfoView.as_view(), name='user-info'),
+    path('users/money-check/', UsersMoneyCheckView.as_view(), name='users-money-check'),
+    
+    # User
+    path('user/watchlist/', UserWatchlistView.as_view(), name='user-watchlist'),
+    path('user/portfolio-analysis/', PortfolioAnalysisView.as_view(), name='portfolio-analysis'),
+    path('user/trade-history/', TradeHistoryView.as_view(), name='trade-history'),
+    path('user/settings/', UserSettingsView.as_view(), name='user-settings'),
+    
+    # Airdrop
+    path('debug/airdrop/', DebugAirdropView.as_view(), name='debug-airdrop'),
+
+    # Market & Companies
+    path('market/sentiment/', MarketSentimentView.as_view(), name='market-sentiment'),
+    path('companies/rates/', CompanyRatesView.as_view(), name='company-rates'),
+    path('companies/<int:pk>/news/', CompanyNewsView.as_view(), name='company-news'),
+
+    # OffersW
+    path('buyoffers/calculate/', BuyOfferCalculateView.as_view(), name='buyoffers-calculate'),
+
+    # Router (companies list/create, offers list/create/update/delete)
+    path('', include(router.urls)),
+]
+
+
+
+
+
+
+"""
+# OLD
+# ===========
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+
+from stockApp.views.auth import SignUpView, SignInView
 from stockApp.views.companies import CompanyViewSet, CompanyRatesView
 from stockApp.views.offers import BuyOfferViewSet, SellOfferViewSet
 from stockApp.views.user import FundsView, UserStocksView, UserInfoView, UsersMoneyCheckView, DebugAirdropView
@@ -31,26 +88,4 @@ urlpatterns = [
 
     # Router (companies list/create)
     path('', include(router.urls)),
-]
-
-
-
-#OLD
-# urlpatterns = [
-    # path('api/signIn', views.signIn, name='signIn'),
-    # path('api/signUp', views.signUp, name='signUp'),
-    # path('api/addCompany', views.createCompany, name='addCompany'),
-    # path('api/companies', views.companies, name='companies'),
-    # path('api/addBuyOffer', views.addBuyOffer, name='addBuyOffer'),
-    # path('api/addSellOffer',views.addSellOffer, name='addSellOffer'),
-    # path('api/user/buyOffers', views.buyOffers, name='buyOffers'),
-    # path('api/user/sellOffers',views.sellOffers, name='sellOffers'),
-    # path('api/deleteBuyOffer/<int:pk>', views.deleteBuyOffer, name='deleteBuyOffer'),
-    # path('api/deleteSellOffer/<int:pk>', views.deleteSellOffer, name='deleteSellOffer'),
-    # path('api/user/addMoney', views.addMoney, name='addMoney'),
-    # path('api/user/stocks', views.getUserStocks, name='getUserStocks'),
-    # path('api/user', views.getUserInfo, name='getUserInfo'),
-    # path('api/deleteDb', views.deleteAllDb, name='deleteDb'),
-    # path('api/usersMoneyCheck', views.getUsersMoneyCheck, name='getUsersMoneyCheck'),
-    # path('api/getCompaniesStockRates', views.getCompaniesStockRates, name ='getCompaniesStockRates'),
-# ]
+]"""

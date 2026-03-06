@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from stockApp.models import Stock, CustomUser, Company
+from stockApp.models import UserWatchlist
+from stockApp.serializers import UserWatchlistSerializer
 from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
 from stockApp.views.mixins import RequestContextMixin
 
@@ -133,6 +135,63 @@ class DebugAirdropView(RequestContextMixin, APIView):
             'stocks_assigned': created_stocks_info,
             'requestId': str(uuid.uuid4())
         }, status=status.HTTP_201_CREATED)
+
+
+class UserWatchlistView(RequestContextMixin, APIView):
+    """
+    POST /api/user/watchlist/
+    Dodaje spółkę do obserwowanych.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = UserWatchlistSerializer(data=request.data, context=self.get_serializer_context())
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PortfolioAnalysisView(RequestContextMixin, APIView):
+    """
+    GET /api/user/portfolio-analysis/
+    Zwraca sztuczną poradę analityczną dla CarefulTradera.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response({
+            "advice": random.choice(["Buy tech stocks", "Sell holding", "Wait for market correction"]),
+            "risk_level": "medium",
+            "cash_to_stock_ratio": round(random.uniform(0.1, 0.9), 2)
+        }, status=status.HTTP_200_OK)
+
+
+class TradeHistoryView(RequestContextMixin, APIView):
+    """
+    GET /api/user/trade-history/
+    Sztuczna historia transakcji do wywoływania po zakupie.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response({
+            "recent_trades": [
+                {"type": "BUY", "amount": 10, "status": "COMPLETED"},
+                {"type": "SELL", "amount": 5, "status": "COMPLETED"}
+            ]
+        }, status=status.HTTP_200_OK)
+
+
+class UserSettingsView(RequestContextMixin, APIView):
+    """
+    POST /api/user/settings/
+    Mock dla zapisywania opcji profilu (wprowadza szum).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        return Response({"message": "Settings updated successfully."}, status=status.HTTP_200_OK)
 
 """
 OLD

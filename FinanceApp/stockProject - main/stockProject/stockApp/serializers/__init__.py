@@ -6,3 +6,5 @@ from .stockSerializer import StockSerializer
 from .updateUserSerializer import UserUpdateSerializer
 from .userInfoSerializer import CustomUserInfoSerializer
 from .userSerializer import CustomUserSerializer
+from .marketNewsSerializer import MarketNewsSerializer
+from .userWatchlistSerializer import UserWatchlistSerializer

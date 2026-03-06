@@ -1,11 +1,13 @@
-from rest_framework import status, viewsets
+from rest_framework import status, viewsets, mixins
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
+from rest_framework.views import APIView
+import random
 
 from stockApp.models import BuyOffer, SellOffer
 from stockApp.serializers import BuyOfferSerializer, SellOfferSerializer
-from stockApp.views.mixins import OfferLifecycleMixin
+from stockApp.views.mixins import OfferLifecycleMixin, RequestContextMixin
 
 
 class BuyOfferViewSet(OfferLifecycleMixin, viewsets.ViewSet):
@@ -32,6 +34,16 @@ class BuyOfferViewSet(OfferLifecycleMixin, viewsets.ViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         offer = serializer.save()
         return Response(BuyOfferSerializer(offer).data, status=status.HTTP_201_CREATED)
+    
+    # PUT /api/buyoffers/{pk}/
+    def update(self, request, pk=None):
+        offer = get_object_or_404(BuyOffer, pk=pk, user=request.user)
+        # partial=True pozwala na częściową aktualizację (np. tylko zmiana ilości)
+        serializer = BuyOfferSerializer(offer, data=request.data, partial=True, context=self.get_serializer_context())
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     # DELETE /api/buyoffers/{pk}/
     def destroy(self, request, pk=None):
@@ -64,12 +76,37 @@ class SellOfferViewSet(OfferLifecycleMixin, viewsets.ViewSet):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         offer = serializer.save()
         return Response(SellOfferSerializer(offer).data, status=status.HTTP_201_CREATED)
+    
+    # PUT /api/selloffers/{pk}/
+    def update(self, request, pk=None):
+        offer = get_object_or_404(SellOffer, pk=pk, user=request.user)
+        serializer = SellOfferSerializer(offer, data=request.data, partial=True, context=self.get_serializer_context())
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     # DELETE /api/selloffers/{pk}/
     def destroy(self, request, pk=None):
         offer = get_object_or_404(SellOffer, pk=pk, user=request.user)
         self.cancel_sell_offer(offer)  # status='cancelled', actual=False, zwrot akcji do Stock
         return Response(status=status.HTTP_204_NO_CONTENT)
+    
+
+class BuyOfferCalculateView(RequestContextMixin, APIView):
+    """
+    POST /api/buyoffers/calculate/
+    Zwraca szacunkowy koszt transakcji (Mock). Nie tworzy prawdziwej oferty.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        # AI uczy się na samej obecności tego zapytania, nie na jego wyniku.
+        return Response({
+            "estimated_cost": random.uniform(100.0, 5000.0),
+            "broker_fee": 5.50,
+            "status": "calculation_complete"
+        }, status=status.HTTP_200_OK)
     
 
 

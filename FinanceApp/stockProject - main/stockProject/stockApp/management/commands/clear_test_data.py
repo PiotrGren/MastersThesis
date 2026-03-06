@@ -5,7 +5,7 @@ from django.conf import settings
 from stockApp.models import (
     Company, Stock, BalanceUpdate, BuyOffer, SellOffer,
     CustomUser, Transaction, StockRate, Cpu, MarketLog,
-    TradeLog, TrafficLog
+    TradeLog, TrafficLog, MarketNews, UserWatchlist
 )
 
 class Command(BaseCommand):
@@ -56,6 +56,8 @@ class Command(BaseCommand):
             BalanceUpdate.objects.all().delete()
             Transaction.objects.all().delete()
             StockRate.objects.all().delete()
+            MarketNews.objects.all().delete()
+            UserWatchlist.objects.all().delete()
 
             CustomUser.objects.exclude(id__in=admin_ids).delete()
 

@@ -5,8 +5,8 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from stockApp.models import Company, Stock, StockRate
-from stockApp.serializers import CompanySerializer, StockRateSerializer
+from stockApp.models import Company, Stock, StockRate, MarketNews
+from stockApp.serializers import CompanySerializer, StockRateSerializer, MarketNewsSerializer
 from stockApp.views.mixins import RequestContextMixin, LatestRateMixin
 
 
@@ -82,7 +82,32 @@ class CompanyRatesView(RequestContextMixin, APIView):
         return Response(data, status=status.HTTP_200_OK)
 
 
+class CompanyNewsView(RequestContextMixin, APIView):
+    """
+    GET /api/companies/{id}/news/
+    Zwraca wiadomości dla konkretnej spółki.
+    """
+    permission_classes = [IsAuthenticated]
 
+    def get(self, request, pk=None, *args, **kwargs):
+        # Pobiera 5 najnowszych newsów z bazy dla danej spółki
+        news = MarketNews.objects.filter(company_id=pk).order_by('-created_at')[:5]
+        serializer = MarketNewsSerializer(news, many=True, context=self.get_serializer_context())
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class MarketSentimentView(RequestContextMixin, APIView):
+    """
+    GET /api/market/sentiment/
+    Mock globalnego wskaźnika strachu/chciwości.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response({
+            "overall_trend": random.choice(["BULLISH", "BEARISH", "NEUTRAL"]),
+            "fear_and_greed_index": random.randint(10, 90)
+        }, status=status.HTTP_200_OK)
 
 """
 OLD

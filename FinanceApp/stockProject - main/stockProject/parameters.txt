@@ -1,0 +1,11 @@
+SCENARIO_ID,USERS,SPAWN_RATE,TIME,CLASSES,WAIT_MIN,WAIT_MAX,RATES_N
+pure_window,50,5,15m,WindowShopper,0.5,2.0,3
+pure_impulsive,50,5,15m,ImpulsiveTrader,0.5,2.0,3
+pure_careful,50,5,15m,CarefulTrader,0.5,2.0,3
+pure_indecisive,50,5,15m,IndecisiveTrader,0.5,2.0,3
+pure_strategic,50,5,15m,StrategicHolder,0.5,2.0,3
+mix_analytical_overlap,120,10,25m,WindowShopper:CarefulTrader:StrategicHolder,0.5,2.0,3
+mix_chaotic_overlap,120,10,25m,ImpulsiveTrader:IndecisiveTrader,0.5,2.0,3
+mix_full_market_light,150,15,30m,WindowShopper:ImpulsiveTrader:CarefulTrader:IndecisiveTrader:StrategicHolder:FundsInjectorUser,0.5,2.0,3
+mix_full_market_heavy,300,30,45m,WindowShopper:ImpulsiveTrader:CarefulTrader:IndecisiveTrader:StrategicHolder:FundsInjectorUser,0.5,2.0,3
+mix_full_long_run,200,20,1h,WindowShopper:ImpulsiveTrader:CarefulTrader:IndecisiveTrader:StrategicHolder:FundsInjectorUser,0.5,2.0,3

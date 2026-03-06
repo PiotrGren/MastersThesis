@@ -10,3 +10,5 @@ from .stockRate import StockRate
 from .tradeLog import TradeLog
 from .transaction import Transaction
 from .user import CustomUser
+from .marketNews import MarketNews
+from .userWatchlist import UserWatchlist
