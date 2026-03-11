@@ -128,12 +128,16 @@ class BaseUser(HttpUser):
         """Inicjalizacja środowiska i pierwsza rejestracja."""
         self.scenario_id = os.getenv("SCENARIO_ID", "default")
         
-        # Generujemy dane i konto TYLKO RAZ dla danego "agenta" Locusta
         if not self.username:
             self.username = f"{fake.user_name()}_{uuid.uuid4().hex[:8]}"
             self.password = fake.password(length=12)
             self.email = f"{self.username}@example.test"
             self._sign_up()
+            
+        self._reset_session(is_sudden=False)
+        
+        # --- NOWE: Dodajemy każdemu użytkownikowi startowy kapitał ---
+        self._put("/api/user/funds/", json={"money": 250000}, name="USER: funds PUT (init)", count_task=False)
             
         # Otwieramy pierwszą sesję roboczą
         self._reset_session(is_sudden=False)
@@ -377,10 +381,10 @@ class ImpulsiveTrader(BaseUser):
                 pk = offer.get("id") or offer.get("pk")
                 if pk:
                     new_amount = random.randint(1, 20)
-                    # Użycie PUT, które zaimplementowaliśmy w backendzie
+                    current_start = offer.get("startAmount", new_amount) # Pobiera startAmount z oferty
                     self._put(
                         f"/api/buyoffers/{pk}/",
-                        json={"amount": new_amount},
+                        json={"amount": new_amount, "startAmount": current_start}, # Zawsze wysyłaj oba
                         name="BUY: update"
                     )
 
@@ -464,12 +468,12 @@ class CarefulTrader(BaseUser):
                 offer = random.choice(offers)
                 pk = offer.get("id") or offer.get("pk")
                 if pk:
-                    # Po namyśle koryguje ofertę o +1 lub -1
                     current_amount = offer.get("amount", 2)
                     new_amount = max(1, current_amount + random.choice([-1, 1]))
+                    current_start = offer.get("startAmount", new_amount)
                     self._put(
                         f"/api/buyoffers/{pk}/",
-                        json={"amount": new_amount},
+                        json={"amount": new_amount, "startAmount": current_start},
                         name="BUY: update (intelligent)"
                     )
 
@@ -591,7 +595,7 @@ class FundsInjectorUser(BaseUser):
     request_class = "FundsInjector"
     @task(1)
     def inject_funds(self):
-        self._post(
+        self._put(
             "/api/user/funds/",
             json={"money": random.randint(500, 2000)},
             name="USER: funds PUT"

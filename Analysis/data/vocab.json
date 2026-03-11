@@ -1,14 +1,14 @@
 {
   "<PAD>": 0,
   "<UNK>": 1,
-  "GET COMPANY": 2,
+  "POST BUY": 2,
   "GET USER": 3,
-  "POST BUY": 4,
-  "GET BUY": 5,
-  "GET SELL": 6,
-  "GET GET": 7,
-  "DELETE BUY": 8,
-  "POST SELL": 9,
-  "POST AUTH": 10,
-  "validation SYSTEM_ERROR": 11
+  "GET COMPANY": 4,
+  "DELETE BUY": 5,
+  "GET BUY": 6,
+  "PUT BUY": 7,
+  "<bound method NDFrame.fillna of 0        validation\n1        validation\n2        validation\n3        validation\n4        validation\n            ...    \n12907    validation\n12908    validation\n12909    validation\n12910    validation\n12911    validation\nName: error_code, Length: 12912, dtype: str> BUY_ERROR": 8,
+  "POST USER": 9,
+  "PUT USER": 10,
+  "GET GET": 11
 }

@@ -1,9 +1,9 @@
 from django.db import models
 from .company import Company
-from .user import User
+from .user import CustomUser
 
 class UserWatchlist(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='watchlist')
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='watchlist')
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='watchers')
     added_at = models.DateTimeField(auto_now_add=True)
 

@@ -16,7 +16,13 @@ from model.bilstm_fusion import BiLSTMFusion, BiLSTMFusionConfig
 from scripts.data_loader import build_data_loader
 
 # Definicja klas (musi być zgodna z process_data.py)
-CLASS_NAMES = ["ReadOnlyUser", "ActiveUser", "ActiveUserWithMarketAnalize"]
+CLASS_NAMES = [
+    "WindowShopper", 
+    "ImpulsiveTrader", 
+    "CarefulTrader", 
+    "IndecisiveTrader", 
+    "StrategicHolder"
+]
 
 def save_plots(cm, report_dict, output_dir):
     """Generuje i zapisuje profesjonalne wykresy do folderu results."""
@@ -157,7 +163,14 @@ def main(args):
             lengths = batch["lengths"].to(device)
             labels = batch["labels"].to(device)
 
-            logits, _ = model(event_ids, time_feats, lengths)
+            #logits, *_ = model(event_ids, time_feats, lengths)
+            #preds = torch.argmax(logits, dim=1)
+
+            outputs = model(event_ids, time_feats, lengths)
+            
+            # Bezpieczne wyciągnięcie logits (zadziała i dla krotki, i dla pojedynczego Tensora)
+            logits = outputs[0] if isinstance(outputs, tuple) else outputs
+            
             preds = torch.argmax(logits, dim=1)
 
             all_preds.extend(preds.cpu().numpy())

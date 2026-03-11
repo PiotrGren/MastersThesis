@@ -41,9 +41,11 @@ logger.addHandler(ch)
 
 # --- MAPOWANIE KLAS UŻYTKOWNIKÓW ---
 LABEL_MAP = {
-    "ReadOnlyUser": 0,
-    "ActiveUser": 1,
-    "ActiveUserWithMarketAnalize": 2
+    "WindowShopper": 0,
+    "ImpulsiveTrader": 1,
+    "CarefulTrader": 2,
+    "IndecisiveTrader": 3,
+    "StrategicHolder": 4
     # Jeśli pojawią się inne, wpadną jako -1 (i zostaną odfiltrowane)
 }
 
@@ -96,7 +98,7 @@ def main(args):
     df_req['timestamp'] = pd.to_datetime(df_req['timestamp'])
     
     # C. Upewnienie się, że mamy potrzebne kolumny
-    required_cols = ['session_id', 'user_class', 'endpoint_group', 'api_method', 'latency_ms_total', 'db_time_ms', 'app_time_ms']
+    #required_cols = ['session_id', 'user_class', 'endpoint_group', 'api_method', 'latency_ms_total', 'db_time_ms', 'app_time_ms']
     df_req = df_req.dropna(subset=['session_id', 'user_class']) # Musi być sesja i klasa
     
     # 4. Integracja Error Log (Dołączamy błędy jako zdarzenia w sesji)
@@ -118,8 +120,8 @@ def main(args):
         if not df_err_matched.empty:
             # Tworzymy syntetyczne zdarzenie dla błędu
             # Np. endpoint_group = "SYSTEM_ERROR", api_method = error_code
-            df_err_matched['endpoint_group'] = 'SYSTEM_ERROR'
-            df_err_matched['api_method'] = df_err_matched['error_code'].fillna('UNKNOWN')
+            df_err_matched['endpoint_group'] = df_err_matched['endpoint_group'].astype(str) + '_ERROR'
+            df_err_matched['api_method'] = df_err_matched['error_code'].fillna
             
             # Wypełniamy czasy zerami (błąd systemowy to zdarzenie punktowe dla modelu)
             for col in ['latency_ms_total', 'db_time_ms', 'app_time_ms']:
@@ -181,6 +183,7 @@ def main(args):
         # Time Feats: [latency, db, app, delta]
         # Log-normalizacja: log1p(x) -> zmniejsza wpływ outlierów
         t_feats = group[['latency_ms_total', 'db_time_ms', 'app_time_ms', 'delta_t']].fillna(0.0).values
+        t_feats = np.clip(t_feats, 0.0, None) # Zabezpiecza przed ujemnymi wartościami (zapobiega NaN)
         t_feats = np.log1p(t_feats) # LOG NORMALIZACJA WAŻNE!
         time_feats = torch.tensor(t_feats, dtype=torch.float32)
         

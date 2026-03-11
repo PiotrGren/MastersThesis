@@ -8,6 +8,7 @@ from stockApp.models import UserWatchlist
 from stockApp.serializers import UserWatchlistSerializer
 from stockApp.serializers import UserUpdateSerializer, StockSerializer, CustomUserInfoSerializer
 from stockApp.views.mixins import RequestContextMixin
+from django.db import IntegrityError
 
 import random 
 import uuid
@@ -20,6 +21,9 @@ class FundsView(RequestContextMixin, APIView):
     Wcześniej: addMoney()
     """
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response({"money": request.user.money}, status=status.HTTP_200_OK)
 
     def put(self, request, *args, **kwargs):
         user = request.user
@@ -146,10 +150,14 @@ class UserWatchlistView(RequestContextMixin, APIView):
 
     def post(self, request, *args, **kwargs):
         serializer = UserWatchlistSerializer(data=request.data, context=self.get_serializer_context())
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError:
+            # Ignorujemy błąd duplikatu - dla AI to nadal poprawny POST, spółka jest w obserwowanych
+            return Response({"message": "Already in watchlist"}, status=status.HTTP_200_OK)
 
 
 class PortfolioAnalysisView(RequestContextMixin, APIView):

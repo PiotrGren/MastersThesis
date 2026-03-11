@@ -21,7 +21,7 @@ MODEL:
   ATTN_DROPOUT: 0.1
   BIDIRECTIONAL: True
   USE_ATTENTION: True
-  NUM_CLASSES: 3  # (0: ReadOnly, 1: Active, 2: ActiveAnalyst) - zgodne z LABEL_MAP
+  NUM_CLASSES: 5  # (0: ReadOnly, 1: Active, 2: ActiveAnalyst) - zgodne z LABEL_MAP
 
 SOLVER:
   OPTIMIZER: "AdamW"
