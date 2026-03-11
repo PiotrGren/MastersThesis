@@ -126,3 +126,74 @@ Tabela pokazuje, dlaczego model będzie musiał użyć mechanizmu uwagi (Attenti
 * **Docelowa liczba sesji:** 5 000 - 10 000 unikalnych sesji.
 * **Szacowana liczba logów:** 1.5 mln - 3.0 mln wierszy w `request_log.jsonl`.
 * **Długość symulacji:** ok. 2-3 godziny ciągłego obciążenia przy zmiennych parametrach `SPAWN_RATE`.
+
+
+
+---
+
+# Realizacja założeń i modyfikacje systemu (Aktualizacja - Marzec 2026)
+
+W oparciu o powyższy plan rozbudowy środowiska symulacyjnego, z sukcesem zrealizowano kluczowe modyfikacje aplikacji oraz przeprowadzono nową, zaawansowaną symulację ruchu. Podjęte działania miały na celu wyeliminowanie trywialności danych oraz wymuszenie na modelu sztucznej inteligencji faktycznej analizy zależności czasowych i sekwencyjnych. 
+
+Główne kroki podjęte w ramach tego etapu to:
+
+## 1. Wdrożenie złożoności behawioralnej i szumu w API (Backend)
+* **Rozbudowa interfejsu API:** Zgodnie z planem, wprowadzono nowe endpointy symulujące działania nietransakcyjne, takie jak kalkulator ofert (`/api/buyoffers/calculate/`) oraz system obserwowanych spółek (`/api/user/watchlist/`). Pozwoliło to na generowanie ruchu typu `POST`, który nie jest bezpośrednio powiązany z handlem.
+* **Iniekcja realistycznych błędów (Negative Samples):** Zmodyfikowano logikę aplikacji tak, aby rejestrowała niepoprawne żądania (np. brak wystarczających środków na koncie). Błędy walidacyjne (status HTTP 400) są poprawnie odkładane w logach (`error_log.jsonl`) i stanowią obecnie kluczową cechę dystynktywną m.in. dla klasy impulsywnej.
+* **Zarządzanie cyklem życia oferty:** Umożliwiono dynamiczne anulowanie ofert (żądania `DELETE`) wraz z automatycznym zwrotem zablokowanych środków/akcji, co dodatkowo zdywersyfikowało możliwe ścieżki użytkownika podczas pojedynczej sesji.
+
+## 2. Nowa symulacja ruchu (Locust) i profile psychologiczne
+* **Wdrożenie nowych klas użytkowników:** Pomyślnie zastąpiono bazowe archetypy pięcioma zaawansowanymi profilami: *WindowShopper, ImpulsiveTrader, CarefulTrader, IndecisiveTrader* oraz *StrategicHolder*.
+* **Nakładanie się klas (Class Overlap):** W nowej symulacji każdy z profili wykonuje zapytania mutujące stan (`POST`/`DELETE`). Zlikwidowało to problem łatwej separowalności klas (gdzie sam fakt wykonania metody POST jednoznacznie identyfikował tradera). 
+* **Modelowanie opóźnień (`delta_t`):** Zaimplementowano zróżnicowane czasy reakcji dla poszczególnych profili (np. błyskawiczne anulowanie ofert przez *IndecisiveTrader* w przeciwieństwie do długotrwałej analizy portfela przez *CarefulTrader*).
+* Dodatkowo zintegrowano bota `FundsInjector`, generującego rynkowy szum tła, który został celowo odizolowany od procesu właściwej klasyfikacji.
+
+## 3. Oczyszczenie potoku danych i eliminacja Data Leakage
+* **Przebudowa Preprocessingu:** Zmodyfikowano skrypt przetwarzający logi na tensory (`process_data.py`), aby całkowicie odciąć model od ukrytych "ściąg". 
+* Z wektorów wejściowych sieci neuronowej bezwzględnie usunięto jawne identyfikatory (takie jak `user_class`, `user_id`, `user_role`). 
+* Sieć BiLSTM zmuszona jest obecnie do wnioskowania wyłącznie na podstawie "czystego" śladu cyfrowego: sekwencji anonimowych tokenów akcji (kombinacja *Metoda + Endpoint*) oraz wektora cech czasowych (całkowite opóźnienie, czas bazy danych, czas logiki aplikacji oraz odstęp od poprzedniej akcji). Zdarzenia błędu (np. `BUY_ERROR`) zostały płynnie zintegrowane jako część wejściowego wektora czasowego.
+
+
+---
+# Wyniki treningu i ewaluacja modelu BiLSTM Fusion
+
+Po wygenerowaniu nowych danych przeprowadzono trening modelu BiLSTM z fuzją cech czasowych i zdarzeniowych. Skonfigurowano model z ukrytym wymiarem `HIDDEN_DIM=192`, używając optymalizatora AdamW oraz mechanizmu uwagi (Attention).
+
+**Analiza procesu uczenia:**
+Trening został przeprowadzony na przestrzeni 5000 iteracji przy użyciu mechanizmu Mini-Batch. Zgodnie z analizą logów (`log.txt`), model prezentował stabilną i prawidłową krzywą uczenia. Zjawisko stochastycznego spadku wzdłuż gradientu było widoczne. Zapisano i przetestowano najlepszą wagę modelu (`model_best.pth`), zapobiegając przeuczeniu (overfittingowi) w późniejszych etapach.
+
+**Ewaluacja na zbiorze testowym (Wyniki):**
+Ostateczne wyniki klasyfikacji na niewidzianym zbiorze testowym wyniosły:
+* **Globalna dokładność (Accuracy):** 86.28%
+* **Średni F1-Score (Macro Avg):** 0.8722
+
+Szczegółowe metryki dla poszczególnych profili:
+* **WindowShopper:** Precision: 99.0%, Recall: 78.7%, F1: 87.7%
+* **ImpulsiveTrader:** Precision: 95.5%, Recall: 80.2%, F1: 87.1%
+* **CarefulTrader:** Precision: 88.5%, Recall: 87.0%, F1: 87.7%
+* **IndecisiveTrader:** Precision: 73.0%, Recall: 97.1%, F1: 83.3%
+* **StrategicHolder:** Precision: 100%, Recall: 82.2%, F1: 90.2%
+
+**Wnioski z Macierzy Pomyłek (Confusion Matrix):**
+Wizualizacje wyników (w tym *Confusion Matrix* oraz wykresy słupkowe metryk) nie zostały wklejone bezpośrednio do raportu, jednak znajdują się w katalogu roboczym projektu: `Analysis/BiLSTMFusion/outputs/v1/results/`.
+Analiza macierzy pomyłek i raportu klasyfikacyjnego ujawnia interesującą specyfikę działania sieci:
+1. **Wysoka identyfikacja IndecisiveTrader:** Z racji silnego nakładania się (Class Overlap) poszczególnych klas korzystających z metod `POST`, model bardzo skutecznie wyłapuje użytkowników niezdecydowanych (Recall 97.1%), jednak stosunkowo często kwalifikuje "na wyrost" innych użytkowników do tej klasy (Precision 73.0%). 
+2. **Precyzja profili strategicznych i oglądających:** Czyste akcje "oglądaczy" (*WindowShopper*) oraz powolnych graczy (*StrategicHolder*) zostały zidentyfikowane z niemalże perfekcyjną precyzją (99%-100%), udowadniając, że mechanizm uwagi BiLSTM poprawnie zdekodował wpływ dużych opóźnień (`delta_t`) na profil psychologiczny inwestora.
+
+
+---
+
+# Dalsze kroki i plan optymalizacji klasyfikacji
+
+Obecne wyniki (dokładność rzędu 86%) stanowią solidny punkt odniesienia (baseline). Zaobserwowano jednak, że model stosunkowo szybko osiąga swoje maksimum możliwości (najlepszy wynik już w okolicach 500. iteracji), co sugeruje, że przy obecnym wolumenie danych sieć szybko wyczerpuje pulę dostępnych wzorców i zaczyna ulegać przeuczeniu (overfittingowi). Aby przełamać ten próg i zmusić sztuczną inteligencję do głębszej analizy, planowane jest podjęcie następujących kroków:
+
+**1. Analiza i eliminacja pozostałych luk w danych (Data/Feature Engineering)**
+Zanim zbiór danych zostanie powiększony, konieczne jest wyeliminowanie czynników, które mogą sztucznie spłycać wnioskowanie modelu:
+* **Nierównowaga klas (Class Imbalance):** Raport klasyfikacyjny wykazuje, że model nadmiernie faworyzuje klasę *IndecisiveTrader* (najniższa precyzja: 73%, przy recallu 97%). Konieczne jest wyrównanie wag klas w funkcji straty (Weighted Cross-Entropy) lub dostosowanie prawdopodobieństw (spawn rates) w skrypcie Locust.
+* **Rozdzielczość sesji:** Należy zweryfikować, czy długość analizowanych okien czasowych (liczba akcji na sesję) nie jest zbyt krótka. Zbyt krótkie sesje uniemożliwiają modelom rekurencyjnym rozwinięcie "pamięci" o długoterminowych zamiarach użytkownika.
+
+**2. Skalowanie zbioru danych (Wielkoskalowa Symulacja)**
+Sieci głębokie wymagają ogromnej różnorodności, aby uczyć się rzadkich przypadków brzegowych. Obecny zbiór treningowy (ok. 4600 sekwencji) zostanie zastąpiony masywną symulacją docelową. Planowane jest wygenerowanie około **400 000 unikalnych sekwencji** zachowań. Taka skala zapobiegnie przedwczesnemu zapamiętywaniu danych przez model (memorization) i wydłuży fazę właściwego uczenia (generalization), pozwalając sieci na odkrycie subtelniejszych korelacji czasowych.
+
+**3. Zmiana architektury na model typu Transformer**
+Architektura BiLSTM, choć skuteczna, posiada naturalne ograniczenia w przetwarzaniu bardzo długich zależności czasowych. Docelowym krokiem badawczym będzie implementacja i trening zupełnie nowego modelu opartego na architekturze **Transformer** (wykorzystującego mechanizm wielogłowicowej uwagi - *Multi-Head Attention*). Porównanie modelu rekurencyjnego (LSTM) z modelem atencyjnym (Transformer) na tak wygenerowanym, gigantycznym zbiorze danych giełdowych stanowić będzie główną oś badawczą pracy magisterskiej, mającą na celu maksymalizację ostatecznej skuteczności klasyfikatora.
