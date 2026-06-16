@@ -1,0 +1,8 @@
+              precision    recall  f1-score   support
+
+     Abandon     0.9989    0.9658    0.9821     36105
+    Purchase     0.7086    0.9878    0.8252      3040
+
+    accuracy                         0.9675     39145
+   macro avg     0.8538    0.9768    0.9037     39145
+weighted avg     0.9764    0.9675    0.9699     39145

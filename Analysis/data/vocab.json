@@ -1,0 +1,18 @@
+{
+  "<PAD>": 0,
+  "<UNK>": 1,
+  "<CLS>": 2,
+  "GET_USER_200": 3,
+  "POST_BUY_201": 4,
+  "GET_COMPANY_200": 5,
+  "POST_BUY_200": 6,
+  "GET_BUY_200": 7,
+  "DELETE_BUY_204": 8,
+  "POST_USER_200": 9,
+  "PUT_BUY_200": 10,
+  "POST_BUY_400_VALIDATION": 11,
+  "GET_GET_404_NOT_FOUND": 12,
+  "GET_GET_200": 13,
+  "POST_USER_201": 14,
+  "PUT_USER_200": 15
+}

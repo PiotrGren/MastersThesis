@@ -1,0 +1,23 @@
+2026-04-20 16:34:14 - Auto-detected config path: outputs/real/v2/config.yaml
+2026-04-20 16:34:14 - Results will be saved to: outputs/real/v2/results
+2026-04-20 16:34:14 - Loading weights from: outputs/real/v2/model_best.pth
+2026-04-20 16:34:14 - Loading test data from: ../data_real/test_data.pt
+2026-04-20 16:34:22 - Running inference...
+2026-04-20 16:35:04 - Auto-detected config path: outputs/real/v2/config.yaml
+2026-04-20 16:35:04 - Results will be saved to: outputs/real/v2/results
+2026-04-20 16:35:04 - Loading weights from: outputs/real/v2/model_best.pth
+2026-04-20 16:35:04 - Loading test data from: ../data_real/test_data.pt
+2026-04-20 16:35:12 - Running inference...
+2026-04-20 16:35:14 - Calculating metrics and generating reports...
+2026-04-20 16:35:14 - 
+              precision    recall  f1-score   support
+
+     Abandon     0.9990    0.9652    0.9818     36105
+    Purchase     0.7052    0.9882    0.8230      3040
+
+    accuracy                         0.9670     39145
+   macro avg     0.8521    0.9767    0.9024     39145
+weighted avg     0.9762    0.9670    0.9695     39145
+
+2026-04-20 16:35:14 - Generating confusion matrix and plots...
+2026-04-20 16:35:15 - [SUCCESS] All results saved to: outputs/real/v2/results

@@ -1,0 +1,45 @@
+{
+    "WindowShopper": {
+        "precision": 0.7435897435897436,
+        "recall": 1.0,
+        "f1-score": 0.8529411764705882,
+        "support": 406.0
+    },
+    "ImpulsiveTrader": {
+        "precision": 0.9851190476190477,
+        "recall": 0.8873994638069705,
+        "f1-score": 0.9337094499294781,
+        "support": 373.0
+    },
+    "CarefulTrader": {
+        "precision": 1.0,
+        "recall": 0.8853868194842407,
+        "f1-score": 0.939209726443769,
+        "support": 349.0
+    },
+    "IndecisiveTrader": {
+        "precision": 0.9949238578680203,
+        "recall": 0.9158878504672897,
+        "f1-score": 0.9537712895377128,
+        "support": 428.0
+    },
+    "StrategicHolder": {
+        "precision": 1.0,
+        "recall": 0.7622950819672131,
+        "f1-score": 0.8651162790697674,
+        "support": 122.0
+    },
+    "accuracy": 0.9123957091775924,
+    "macro avg": {
+        "precision": 0.9447265298153622,
+        "recall": 0.8901938431451427,
+        "f1-score": 0.9089495842902633,
+        "support": 1678.0
+    },
+    "weighted avg": {
+        "precision": 0.933357718609567,
+        "recall": 0.9123957091775924,
+        "f1-score": 0.9154411412206689,
+        "support": 1678.0
+    }
+}

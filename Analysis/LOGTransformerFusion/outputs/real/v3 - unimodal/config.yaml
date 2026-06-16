@@ -1,0 +1,46 @@
+# ==============================================================================
+# CONFIG: LogTransformer Fusion Training
+# ==============================================================================
+
+SYSTEM:
+  OUTPUT_DIR: "./outputs/real/v2"
+  DEVICE: "cuda"
+  SEED: 169783
+
+DATA:
+  TRAIN_PATH: "../data_real/train_data.pt"
+  VAL_PATH: "../data_real/val_data.pt"
+  VOCAB_PATH: "../data_real/vocab.json"
+  NUM_WORKERS: 0
+
+MODEL:
+  D_MODEL: 128
+  TIME_FEAT_DIM: 1
+  TIME_MLP_HIDDEN: 256
+  NHEAD: 8
+  NUM_LAYERS: 4
+  DIM_FEEDFORWARD: 512
+  MAX_SEQ_LEN: 200
+  NUM_CLASSES: 2
+  HEAD_HIDDEN: 256
+  DROPOUT: 0.2
+
+SOLVER:
+  OPTIMIZER: "AdamW"
+  BASE_LR: 0.0005
+  WEIGHT_DECAY: 0.01
+  CLIP_GRADIENTS: 1.0
+
+  MAX_ITER: 5000
+  USR_PER_BATCH: 128
+
+  STEPS: [3000, 4000]
+  GAMMA: 0.1
+
+  WARMUP_ITERS: 500
+  WARMUP_FACTOR: 0.001
+
+PERIODS:
+  LOG_PERIOD: 25
+  EVAL_PERIOD: 250
+  CHECKPOINT_PERIOD: 500

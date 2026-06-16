@@ -1,0 +1,16 @@
+2026-04-14 14:42:50 - Loading test data from: ..\data\test_data.pt
+2026-04-14 14:42:51 - Running inference...
+2026-04-14 14:43:00 - 
+                  precision    recall  f1-score   support
+
+   WindowShopper     0.7436    1.0000    0.8529       406
+ ImpulsiveTrader     0.9794    0.8901    0.9326       373
+   CarefulTrader     1.0000    0.8797    0.9360       349
+IndecisiveTrader     0.9975    0.9159    0.9549       428
+ StrategicHolder     1.0000    0.7623    0.8651       122
+
+        accuracy                         0.9118      1678
+       macro avg     0.9441    0.8896    0.9083      1678
+    weighted avg     0.9327    0.9118    0.9148      1678
+
+2026-04-14 14:43:02 - [SUCCESS] All results saved to: outputs\v2\results

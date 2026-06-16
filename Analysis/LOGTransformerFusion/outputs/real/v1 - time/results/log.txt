@@ -1,0 +1,17 @@
+2026-04-20 15:56:06 - Auto-detected config path: outputs/real/v1/config.yaml
+2026-04-20 15:56:06 - Loading weights from: outputs/real/v1/best_checkpoint.pth
+2026-04-20 15:56:07 - Loading test data from: ../data_real/test_data.pt
+2026-04-20 15:56:14 - Running inference...
+2026-04-20 15:56:16 - Calculating metrics and generating reports...
+2026-04-20 15:56:16 - 
+              precision    recall  f1-score   support
+
+     Abandon     0.9991    0.9200    0.9579     36105
+    Purchase     0.5104    0.9905    0.6737      3040
+
+    accuracy                         0.9255     39145
+   macro avg     0.7548    0.9552    0.8158     39145
+weighted avg     0.9612    0.9255    0.9359     39145
+
+2026-04-20 15:56:16 - Generating confusion matrix and plots...
+2026-04-20 15:56:18 - [SUCCESS] All results saved to: outputs/real/v1/results

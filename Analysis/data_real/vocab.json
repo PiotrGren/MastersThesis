@@ -1,0 +1,8 @@
+{
+    "<PAD>": 0,
+    "<UNK>": 1,
+    "<CLS>": 2,
+    "view": 3,
+    "cart": 4,
+    "remove_from_cart": 5
+}

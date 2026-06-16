@@ -1,0 +1,11 @@
+                  precision    recall  f1-score   support
+
+   WindowShopper     0.3617    0.9113    0.5178       406
+ ImpulsiveTrader     0.6230    0.5228    0.5685       373
+   CarefulTrader     0.2885    0.0430    0.0748       349
+IndecisiveTrader     0.9274    0.5070    0.6556       428
+ StrategicHolder     1.0000    0.4590    0.6292       122
+
+        accuracy                         0.5083      1678
+       macro avg     0.6401    0.4886    0.4892      1678
+    weighted avg     0.5952    0.5083    0.4802      1678

@@ -1,0 +1,18 @@
+2026-04-20 16:17:44 - Auto-detected config path: outputs/real/v1/config.yaml
+2026-04-20 16:17:44 - Results will be saved to: outputs/real/v1/results
+2026-04-20 16:17:44 - Loading weights from: outputs/real/v1/model_best.pth
+2026-04-20 16:17:45 - Loading test data from: ../data_real/test_data.pt
+2026-04-20 16:17:52 - Running inference...
+2026-04-20 16:17:54 - Calculating metrics and generating reports...
+2026-04-20 16:17:54 - 
+              precision    recall  f1-score   support
+
+     Abandon     0.9989    0.9658    0.9821     36105
+    Purchase     0.7086    0.9878    0.8252      3040
+
+    accuracy                         0.9675     39145
+   macro avg     0.8538    0.9768    0.9037     39145
+weighted avg     0.9764    0.9675    0.9699     39145
+
+2026-04-20 16:17:54 - Generating confusion matrix and plots...
+2026-04-20 16:17:55 - [SUCCESS] All results saved to: outputs/real/v1/results
