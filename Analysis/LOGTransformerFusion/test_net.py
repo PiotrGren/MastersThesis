@@ -7,7 +7,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from pathlib import Path
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
 import os
 import sys
 
@@ -101,6 +101,8 @@ def main(args):
 
     all_preds = []
     all_labels = []
+    all_probs = []
+
     logger.warning("Running inference...")
     with torch.no_grad():
         for barch in test_loader:
@@ -116,9 +118,10 @@ def main(args):
             outputs = model(event_ids, time_feats, lengths)
             logits = outputs[0] if isinstance(outputs, tuple) else outputs
             preds = torch.argmax(logits, dim=1)
-
+            probs = torch.softmax(logits, dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
+            all_probs.extend(probs.detach().cpu().numpy())
 
     logger.debug("Calculating metrics and generating reports...")
 
@@ -132,6 +135,54 @@ def main(args):
 
     with open(results_dir / "metrics.json", "w") as f:
         json.dump(report_dict, f, indent=4)
+
+    all_probs_np = np.array(all_probs)
+    if all_probs_np.ndim == 2:
+        all_probs_np = all_probs_np[:, 1]
+
+    roc_auc = roc_auc_score(all_labels, all_probs_np)
+    
+    with open(results_dir / "roc_auc_report.txt", "w") as f:
+        f.write("=== Raport ROC AUC ===\n")
+        f.write(f"Zbiór ewaluacyjny: {len(all_labels)} próbek\n")
+        f.write(f"ROC AUC Score: {roc_auc:.4f}\n")
+
+    logger.info(f"Zapisano wynik ROC AUC: {roc_auc:.4f} do pliku roc_auc_report.txt")
+    
+    # Zabezpieczenie: dodanie wyniku też do ogólnego JSONa
+    report_dict["roc_auc"] = roc_auc
+    with open(results_dir / "metrics.json", "w") as f:
+        json.dump(report_dict, f, indent=4)
+
+    # C. Generowanie i zapis wykresu krzywej ROC
+    logger.debug("Generating ROC Curve plot...")
+    
+    # Wyliczenie wektorów FPR i TPR na podstawie skorygowanych prawdopodobieństw
+    fpr, tpr, thresholds = roc_curve(all_labels, all_probs_np)
+    
+    plt.figure(figsize=(8, 6))
+    
+    # Rysowanie właściwej krzywej modelu
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'Krzywa ROC (AUC = {roc_auc:.4f})')
+    
+    # Rysowanie linii bazowej (losowy klasyfikator, AUC = 0.5)
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Losowy klasyfikator')
+    
+    # Formatowanie wykresu w rygorze akademickim
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('Odsetek Fałszywie Pozytywnych (FPR)')
+    plt.ylabel('Odsetek Prawdziwie Pozytywnych (TPR)')
+    plt.title('Krzywa ROC (Receiver Operating Characteristic)')
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    
+    # Zapis wykresu (bbox_inches='tight' usuwa niepotrzebne białe marginesy)
+    roc_plot_path = results_dir / "roc_curve.png"
+    plt.savefig(roc_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Zapisano wykres krzywej ROC do: {roc_plot_path}")
 
     logger.debug("Generating confusion matrix and plots...")
     cm = confusion_matrix(all_labels, all_preds)
